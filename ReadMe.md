@@ -337,14 +337,19 @@ python run_once.py        # Process receipts
 - ✅ Failed receipts saved locally for review
 - ⚠️ Store `.env` securely (contains passwords)
 
+## Roadmap
+
+### Planned Features
+- 📸 **Image extraction & upload** - Attach product images from emails to Homebox items
+- 📄 **Email PDF attachment** - Save original receipt email as PDF attachment
+- 📚 **Product manual finder** - Auto-find and attach product manuals
+- 📧 **Multi-provider support** - IMAP support for Outlook, Fastmail, etc.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed implementation notes.
+
 ## Contributing
 
-This is a personal project but PRs welcome! Areas for improvement:
-- Support for more email providers
-- PDF/image receipt support
-- Duplicate detection
-- Better manufacturer/model extraction
-- Alternative AI models
+This is a personal project build almost entirely with Claude. Feel free to fork and continue working on it yourself, but I probably won't be taking PRs.
 
 ## License
 

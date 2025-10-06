@@ -200,20 +200,68 @@ Homebox API has limited fields on create endpoint:
 - IMAP requires SELECTED state for COPY/DELETE operations
 
 ### Future Improvements
+
+#### High Priority
+- [ ] **Image extraction & upload** - Find product images in emails and attach to Homebox items
+- [ ] **Email as PDF attachment** - Convert original receipt email to PDF and attach to item
+- [ ] **Product manual finder** - Search for and attach product manuals to items
+- [ ] **IMAP support for other providers** - Extend beyond Gmail (Outlook, Fastmail, etc.)
+
+#### Medium Priority
 - [ ] Add retry logic for transient failures
-- [ ] Support for more email providers
 - [ ] Custom field mappings per store
-- [ ] Image/PDF receipt support
-- [ ] Duplicate detection
+- [ ] Duplicate detection (check if item already exists)
 - [ ] Batch mode optimizations
+
+#### Low Priority
+- [ ] PDF receipt parsing (not just email text)
+- [ ] OCR for image-only receipts
 
 ## Quick Start for Future Sessions
 
+### Current Status Check
 1. Activate venv: `source venv/bin/activate`
 2. Check dependencies: `pip list`
 3. Test email: `python test_email.py`
 4. Test Homebox: `python test_homebox.py`
 5. Run processor: `python run_once.py`
+
+### Where We Left Off (2025-10-05)
+
+**What's Working:**
+- ✅ Core extraction pipeline (email → AI → Homebox)
+- ✅ Two-step Homebox API integration (create + update)
+- ✅ Confidence validation with price cross-checking
+- ✅ Email organization (auto-move to subfolders)
+- ✅ All test scripts functional
+
+**Known Quirks:**
+- Homebox API requires two requests: POST to create, PUT to update with price/details
+- Gmail nested labels need "/" separator in config
+- MLX model needs 4096 tokens for long Amazon product names
+- Price must be float in update request (not string)
+
+**Next Session - Start Here:**
+
+To work on **image extraction**:
+1. Look at `src/email_fetcher.py` `_extract_body()` method - extend to find attachments/images
+2. Check Homebox API docs for attachment upload endpoint
+3. May need to download images, then upload to Homebox
+
+To work on **email as PDF**:
+1. Research Python libraries: `weasyprint` or `pdfkit` for HTML→PDF conversion
+2. Email body is already extracted in `email_fetcher.py`
+3. Homebox attachment API likely POST to `/api/v1/items/{id}/attachments`
+
+To work on **product manuals**:
+1. Extract manufacturer + model from receipt (already in JSON)
+2. Search for "{manufacturer} {model} manual PDF"
+3. Download and attach to item
+
+To work on **other IMAP providers**:
+1. `email_fetcher.py` already uses standard IMAP (should work anywhere)
+2. Main changes needed in `.env` (different host/port)
+3. Test with Outlook: `outlook.office365.com:993`
 
 ## Debugging
 
@@ -226,3 +274,6 @@ Check logs:
 - `data/logs/processor.log` - Main app logs
 - `data/failed/` - Failed receipt extractions
 - `data/processed/` - Successfully processed receipts
+
+View Homebox API requests/responses:
+- Set `logging.getLogger('homebox_client').setLevel(logging.DEBUG)` in script
