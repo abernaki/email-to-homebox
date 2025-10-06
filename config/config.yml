@@ -1,0 +1,106 @@
+# Receipt email detection
+email:
+  # Folders to monitor
+  folders:
+    - Receipts
+  
+  # Email subject patterns that indicate receipts
+  subject_patterns:
+    - ".*receipt.*"
+    - ".*order.*confirmation.*"
+    - ".*your order.*"
+    - ".*purchase.*"
+    - ".*invoice.*"
+  
+  # Trusted sender domains
+  sender_domains:
+    - amazon.com
+    - target.com
+    - walmart.com
+    - bestbuy.com
+    - homedepot.com
+    - lowes.com
+    - costco.com
+    - etsy.com
+    - ebay.com
+  
+  # Processing options
+  move_to_folder_on_success: "Receipts/Receipts (in Homebox)"
+  move_to_folder_on_low_confidence: "Receipts/Receipts (process manually)"
+
+# AI extraction configuration
+ai:
+  system_prompt: |
+    You are a receipt data extraction assistant. Extract purchase information from receipt emails.
+    Only extract information you are confident about. Return valid JSON only.
+  
+  extraction_prompt: |
+    Extract purchase information from this receipt email and return ONLY a JSON object with this structure:
+
+    {
+      "items": [
+        {
+          "name": "Product name",
+          "price": 29.99,
+          "description": "Optional extended description",
+          "quantity": 1,
+          "category": "electronics",
+          "manufacturer": "Brand name (if available)",
+          "model_number": "Model number (if available)",
+          "serial_number": "Serial number (if available)"
+        }
+      ],
+      "store": "Store name",
+      "order_date": "2024-03-15",
+      "total": 29.99,
+      "order_id": "123-4567890-1234567",
+      "confidence": 0.95
+    }
+
+    Categories should be one of: electronics, clothing, food, home, books, health, automotive, sports, toys, other.
+    You can shorten product names but keep them descriptive. Use functionality details from the product name in the description.
+
+    For the confidence field (0.0 to 1.0), rate how confident you are in the extraction:
+    - 0.9-1.0: Clear, well-formatted receipt with all information present
+    - 0.7-0.9: Most information present but some fields unclear or missing
+    - 0.5-0.7: Partial information, significant uncertainty
+    - Below 0.5: Very uncertain, possibly not a receipt
+
+    Total price should include sales tax if shown on the receipt.
+
+    Return ONLY the JSON, no other text.
+
+# Homebox item mapping
+homebox:
+  # Default location for new items
+  default_location: "Unassigned"
+  
+  # Category mapping from AI to Homebox
+  category_map:
+    electronics: "Electronics"
+    clothing: "Clothing"
+    food: "Food & Beverages"
+    home: "Home & Garden"
+    books: "Books & Media"
+    health: "Health & Beauty"
+    automotive: "Automotive"
+    sports: "Sports & Outdoors"
+    toys: "Toys & Games"
+    other: "General"
+  
+  # Template for item notes
+  notes_template: "Purchased from {store} on {date}. Order: {order_id}"
+
+# Processing rules
+processing:
+  # Minimum confidence score to auto-add (0.0 to 1.0)
+  min_confidence: 0.7
+  
+  # Maximum items per receipt (safety check)
+  max_items_per_receipt: 50
+  
+  # Save failed extractions for review
+  save_failed: true
+  
+  # Save all processed receipts
+  save_processed: true
