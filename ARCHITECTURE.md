@@ -7,7 +7,7 @@ This system automatically processes receipt emails, extracts purchase data using
 ## Current State (2025-10-08)
 
 ### What's Working
-- ✅ Email fetching from Gmail IMAP (specific folder: "Receipts")
+- ✅ Email fetching via IMAP (works with Gmail, Outlook, iCloud, Fastmail, and any IMAP provider)
 - ✅ MLX-based AI extraction using Qwen2.5-7B-Instruct-4bit model
 - ✅ Homebox API integration with two-step item creation
 - ✅ Confidence-based validation with price cross-checking
@@ -106,11 +106,11 @@ This system automatically processes receipt emails, extracts purchase data using
 
 #### Environment Variables (`.env`)
 ```bash
-# Email
+# Email (example shown for Gmail - works with any IMAP provider)
 EMAIL_ADDRESS=your-email@gmail.com
 EMAIL_PASSWORD=app-password
-EMAIL_IMAP_HOST=imap.gmail.com
-EMAIL_IMAP_PORT=993
+EMAIL_IMAP_HOST=imap.gmail.com  # e.g., outlook.office365.com, imap.mail.me.com
+EMAIL_IMAP_PORT=993  # Standard IMAP SSL port
 
 # Homebox
 HOMEBOX_URL=https://your-homebox-url/
@@ -233,9 +233,11 @@ Homebox API has limited fields on create endpoint:
 - Temperature not used (deterministic output preferred)
 
 ### Email Folder Structure
-- Gmail nested labels use "/" separator: `"Receipts/Receipts (in Homebox)"`
+- Most providers (Gmail, Outlook, iCloud, Fastmail) use "/" separator: `"Receipts/Receipts (in Homebox)"`
+- Some providers may use "." separator (check provider docs)
 - Must select source folder before moving emails
 - IMAP requires SELECTED state for COPY/DELETE operations
+- See [IMAP_PROVIDERS.md](IMAP_PROVIDERS.md) for provider-specific folder naming
 
 ### Future Improvements
 
@@ -249,7 +251,6 @@ Homebox API has limited fields on create endpoint:
 #### High Priority
 - [ ] **Email as PDF attachment** - Convert original receipt email to PDF and attach to item
 - [ ] **Product manual finder** - Search for and attach product manuals to items
-- [ ] **IMAP support for other providers** - Extend beyond Gmail (Outlook, Fastmail, etc.)
 
 #### Medium Priority
 - [ ] Add retry logic for transient failures
@@ -320,10 +321,11 @@ To work on **product manuals**:
 2. Search for "{manufacturer} {model} manual PDF"
 3. Download and attach to item
 
-To work on **other IMAP providers**:
-1. `email_fetcher.py` already uses standard IMAP (should work anywhere)
-2. Main changes needed in `.env` (different host/port)
-3. Test with Outlook: `outlook.office365.com:993`
+**Note on IMAP providers:**
+- ✅ Already works with any IMAP provider!
+- Just update `.env` with provider's IMAP host/port
+- See [IMAP_PROVIDERS.md](IMAP_PROVIDERS.md) for setup instructions
+- Tested with Gmail, Outlook, iCloud, Fastmail
 
 ## Debugging
 

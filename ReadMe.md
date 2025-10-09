@@ -5,7 +5,7 @@ Automatically extract purchase data from email receipts using local AI (MLX on A
 ## Features
 
 - 🤖 **Local AI processing** using MLX-LM (Qwen2.5-7B-Instruct-4bit, optimized for Apple Silicon)
-- 📧 **Gmail integration** via IMAP - monitors specific folder for receipts
+- 📧 **Email integration** via IMAP - works with Gmail, Outlook, iCloud, Fastmail, and any IMAP provider
 - 🏠 **Homebox API integration** - automatically creates inventory items with purchase info
 - 🖼️ **Product image extraction** - finds and uploads product photos from emails
   - Extracts images from email attachments
@@ -32,7 +32,7 @@ From receipt emails, the system extracts:
 - macOS with Apple Silicon (M1/M2/M3/M4)
 - Python 3.10 or later
 - 8GB+ RAM recommended (model uses ~5GB)
-- Gmail account with app password
+- Email account with IMAP access (Gmail, Outlook, iCloud, Fastmail, etc.)
 - Homebox instance (tested with sysadminsmedia/homebox)
 
 ## Quick Start
@@ -63,7 +63,7 @@ nano .env
 Fill in your settings:
 
 ```bash
-# Email settings
+# Email settings (example shown for Gmail)
 EMAIL_ADDRESS=your-email@gmail.com
 EMAIL_PASSWORD=your-app-password
 EMAIL_IMAP_HOST=imap.gmail.com
@@ -79,16 +79,24 @@ AI_MODEL=mlx-community/Qwen2.5-7B-Instruct-4bit
 AI_MAX_TOKENS=4096
 ```
 
-**Getting Gmail App Password:**
-1. Go to https://myaccount.google.com/apppasswords
-2. Create a new app password
-3. Use that password in `.env` (not your regular Gmail password)
+**Email Setup:**
+1. Find your IMAP settings (see [IMAP_PROVIDERS.md](IMAP_PROVIDERS.md) for Gmail, Outlook, iCloud, etc.)
+2. Create an app password if required by your provider
+3. Update `.env` with your provider's IMAP host, port, and credentials
+
+**Common providers:**
+- **Gmail:** `imap.gmail.com:993` (app password required)
+- **Outlook:** `outlook.office365.com:993`
+- **iCloud:** `imap.mail.me.com:993` (app password required)
+- **Fastmail:** `imap.fastmail.com:993`
+
+See [IMAP_PROVIDERS.md](IMAP_PROVIDERS.md) for detailed setup instructions for each provider.
 
 **Homebox Setup:**
 1. Create a location called "Unassigned" in Homebox
 
-**Gmail Setup:**
-1. Create a Gmail label/folder called "Receipts"
+**Email Folder Setup:**
+1. Create a folder/label called "Receipts" in your email
 2. Create subfolders: "Receipts/Receipts (in Homebox)" and "Receipts/Receipts (process manually)"
 3. Move some receipt emails to the "Receipts" folder
 
@@ -204,7 +212,7 @@ Configure email folders (currently set to "Receipts" folder only):
 ```yaml
 email:
   folders:
-    - Receipts  # Gmail label/folder to monitor
+    - Receipts  # Email folder/label to monitor
 
   # Email moving (optional, currently disabled in run_once.py)
   move_to_folder_on_success: "Receipts/Receipts (in Homebox)"
@@ -212,6 +220,8 @@ email:
 ```
 
 **Note:** Subject patterns and sender domains are in the config but currently ALL emails in the configured folder are processed (no filtering).
+
+**Folder naming:** Most providers use "/" for nested folders. See [IMAP_PROVIDERS.md](IMAP_PROVIDERS.md) if you have issues.
 
 ### Homebox Settings (`config/config.yml`)
 
@@ -256,7 +266,7 @@ LOG_LEVEL=INFO          # DEBUG, INFO, WARNING, ERROR
 
 ## How It Works
 
-1. **Email Fetching**: Connects to Gmail via IMAP and fetches all emails from "Receipts" folder
+1. **Email Fetching**: Connects to your email via IMAP and fetches all emails from "Receipts" folder
 2. **Image Extraction**:
    - Extracts image attachments from emails
    - Parses HTML for `<img>` tags and downloads linked images
@@ -300,9 +310,10 @@ Runs continuously, checking email every 5 minutes. Will auto-move emails to succ
 ### Email Connection Issues
 
 **Problem:** "Failed to connect to email"
-- For Gmail: Use an **App Password**, not your regular password
-- Check IMAP is enabled in Gmail settings
-- Verify `.env` has correct IMAP host/port
+- Use an **App Password** if required by your provider (Gmail, iCloud, Yahoo require this)
+- Check IMAP is enabled in your email settings
+- Verify `.env` has correct IMAP host/port for your provider
+- See [IMAP_PROVIDERS.md](IMAP_PROVIDERS.md) for provider-specific troubleshooting
 
 ### Homebox Authentication
 
@@ -374,11 +385,11 @@ Successfully processed receipts are automatically moved to organized subfolders:
 - **Low confidence (<0.7)**: Moved to `Receipts/Receipts (process manually)`
 - **Failed extraction**: Stays in original `Receipts` folder
 
-**Important:** Create these Gmail labels/subfolders before running:
+**Important:** Create these subfolders before running:
 1. `Receipts/Receipts (in Homebox)`
 2. `Receipts/Receipts (process manually)`
 
-Gmail nested labels use "/" separator in the config.
+**Note:** Most email providers (Gmail, Outlook, iCloud, Fastmail) use "/" for nested folders. If email moving fails, check [IMAP_PROVIDERS.md](IMAP_PROVIDERS.md) for your provider's folder naming convention.
 
 ## Development
 
