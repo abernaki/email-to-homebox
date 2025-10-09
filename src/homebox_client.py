@@ -218,3 +218,125 @@ class HomeboxClient:
         except requests.exceptions.RequestException as e:
             logger.error(f"Error getting labels: {e}")
             return None
+
+    def get_items(self, page=1, page_size=50):
+        """
+        Get items from Homebox with pagination
+
+        Args:
+            page: Page number (default: 1)
+            page_size: Items per page (default: 50)
+
+        Returns:
+            Dictionary with 'items' list and pagination info, or None if failed
+        """
+        try:
+            response = requests.get(
+                f"{self.base_url}/api/v1/items",
+                headers=self.headers,
+                params={'page': page, 'pageSize': page_size},
+                timeout=30
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error getting items: {e}")
+            return None
+
+    def get_item(self, item_id):
+        """
+        Get single item by ID with full details including attachments
+
+        Args:
+            item_id: The ID of the item
+
+        Returns:
+            Item dictionary with full details, or None if failed
+        """
+        try:
+            response = requests.get(
+                f"{self.base_url}/api/v1/items/{item_id}",
+                headers=self.headers,
+                timeout=10
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error getting item {item_id}: {e}")
+            return None
+
+    def upload_attachment(self, item_id, image_data, filename, attachment_type="photo"):
+        """
+        Upload an image attachment to a Homebox item
+
+        Args:
+            item_id: The ID of the item to attach to
+            image_data: The binary image data (bytes)
+            filename: The filename for the attachment
+            attachment_type: Type of attachment (default: "photo")
+
+        Returns:
+            The attachment response data, or None if failed
+        """
+        try:
+            logger.debug(f"Uploading attachment to item {item_id}: {filename}")
+
+            # Prepare multipart form data
+            # Note: Don't include Content-Type header for multipart, requests will set it
+            files = {
+                'file': (filename, image_data, 'image/jpeg')
+            }
+            data = {
+                'type': attachment_type,
+                'name': filename  # Homebox requires 'name' field
+            }
+
+            # Create headers without Content-Type for multipart upload
+            upload_headers = {
+                'Authorization': self.headers.get('Authorization')
+            }
+
+            response = requests.post(
+                f"{self.base_url}/api/v1/items/{item_id}/attachments",
+                headers=upload_headers,
+                files=files,
+                data=data,
+                timeout=30
+            )
+
+            logger.debug(f"Upload response status: {response.status_code}")
+
+            if response.status_code in [200, 201]:
+                result = response.json()
+                logger.info(f"✓ Uploaded attachment: {filename}")
+                return result
+            elif response.status_code == 401:
+                # Token expired, try to re-login once
+                logger.warning("Token expired during upload, attempting to re-login...")
+                if self._login():
+                    # Update auth header
+                    upload_headers['Authorization'] = self.headers.get('Authorization')
+                    # Retry the request
+                    response = requests.post(
+                        f"{self.base_url}/api/v1/items/{item_id}/attachments",
+                        headers=upload_headers,
+                        files={'file': (filename, image_data, 'image/jpeg')},
+                        data={'type': attachment_type, 'name': filename},
+                        timeout=30
+                    )
+                    if response.status_code in [200, 201]:
+                        result = response.json()
+                        logger.info(f"✓ Uploaded attachment after re-login: {filename}")
+                        return result
+
+                logger.error(f"Failed to upload attachment after re-login. Status: {response.status_code}")
+                logger.debug(f"Response: {response.text}")
+                return None
+            else:
+                logger.error(f"Failed to upload attachment. Status: {response.status_code}")
+                logger.debug(f"Response: {response.text}")
+                return None
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error uploading attachment: {e}")
+            return None

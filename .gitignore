@@ -8,11 +8,13 @@ __pycache__/
 data/logs/*
 data/failed/*
 data/processed/*
+data/test_images/*
 
 # Keep directories
 !data/logs/.gitkeep
 !data/failed/.gitkeep
 !data/processed/.gitkeep
+!data/test_images/.gitkeep
 
 # OS
 .DS_Store

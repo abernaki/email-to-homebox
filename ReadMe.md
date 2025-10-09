@@ -7,6 +7,11 @@ Automatically extract purchase data from email receipts using local AI (MLX on A
 - 🤖 **Local AI processing** using MLX-LM (Qwen2.5-7B-Instruct-4bit, optimized for Apple Silicon)
 - 📧 **Gmail integration** via IMAP - monitors specific folder for receipts
 - 🏠 **Homebox API integration** - automatically creates inventory items with purchase info
+- 🖼️ **Product image extraction** - finds and uploads product photos from emails
+  - Extracts images from email attachments
+  - Downloads linked images from HTML emails
+  - DuckDuckGo search fallback when no email images
+  - Smart filtering (size, URL patterns, dimensions)
 - 🔒 **Privacy-focused** - all AI processing happens locally on your Mac
 - ⚡️ **Fast** - leverages Apple's Metal GPU for quick inference (~2-3 sec per receipt)
 - 📊 **Smart validation** - cross-checks item prices vs receipt total, adjusts confidence
@@ -19,6 +24,7 @@ From receipt emails, the system extracts:
 - **Items**: name, price, quantity, category, description
 - **Product details**: manufacturer, model number, serial number (when available)
 - **Purchase info**: store, date, order ID, total amount
+- **Product images**: from attachments, HTML links, or DuckDuckGo search
 - **Metadata**: confidence score, validation results
 
 ## Requirements
@@ -100,6 +106,18 @@ This will:
 - Extract and display the JSON data
 - Show confidence analysis
 
+Test image extraction:
+
+```bash
+python test_images.py
+```
+
+This will:
+- Fetch a receipt from your "Receipts" folder
+- Extract images (attachments + HTML links)
+- Show image dimensions and sources
+- Save first image to `data/test_images/` for verification
+
 Test Homebox connection:
 
 ```bash
@@ -121,28 +139,60 @@ This will:
 - Add high-confidence items (≥0.7) to Homebox
 - Show summary of results
 
+### 5. Backfill Images (Optional)
+
+Add images to existing items in Homebox:
+
+```bash
+python backfill_images.py --max-items 5
+```
+
+This is useful for:
+- **Testing image search** - Process just 1-2 items to test DuckDuckGo
+- **Adding images to existing items** - Don't need to process receipts
+- **Avoiding rate limits** - Control exactly how many items to process
+
+**Quick examples:**
+```bash
+# Test with 1 item
+python backfill_images.py --max-items 1
+
+# Preview what would be done (dry run)
+python backfill_images.py --max-items 10 --dry-run
+
+# Process items in specific location
+python backfill_images.py --location "Unassigned"
+```
+
+See [BACKFILL_GUIDE.md](BACKFILL_GUIDE.md) for detailed usage.
+
 ## Project Structure
 
 ```
 email-to-homebox/
 ├── run_once.py           # One-time batch processor (recommended)
+├── backfill_images.py    # Add images to existing Homebox items
 ├── test_email.py         # Test email + extraction
+├── test_images.py        # Test image extraction
 ├── test_homebox.py       # Test Homebox API
 ├── setup.sh              # Setup script
 ├── requirements.txt      # Python dependencies
 ├── .env                  # Your configuration (not in git)
 ├── env.sample            # Example environment file
+├── BACKFILL_GUIDE.md     # Backfill usage guide
 ├── config/
 │   └── config.yml       # App configuration & prompts
 ├── src/
 │   ├── app.py           # Main application logic
-│   ├── email_fetcher.py # Email IMAP handling
+│   ├── email_fetcher.py # Email IMAP handling + image extraction
 │   ├── receipt_extractor_mlx.py  # MLX AI extraction
-│   └── homebox_client.py         # Homebox API client
+│   ├── homebox_client.py         # Homebox API client + attachment upload
+│   └── image_handler.py          # DuckDuckGo image search
 └── data/
     ├── logs/            # Application logs
     ├── failed/          # Failed receipts for review
-    └── processed/       # Successfully processed receipts
+    ├── processed/       # Successfully processed receipts
+    └── test_images/     # Test images (created by test_images.py)
 ```
 
 ## Configuration
@@ -187,8 +237,19 @@ AI_MAX_TOKENS=4096  # Needed for long product names
 
 ### Processing Settings
 
+In `config/config.yml`:
+
+```yaml
+processing:
+  min_confidence: 0.7          # Only auto-add items with 70%+ confidence
+  enable_image_search: true    # Use DuckDuckGo fallback when no email images
+  save_processed: true         # Save processed receipts to data/processed/
+  save_failed: true            # Save failed receipts to data/failed/
+```
+
+In `.env`:
+
 ```bash
-MIN_CONFIDENCE=0.7      # Only auto-add items with 70%+ confidence
 CHECK_INTERVAL=300      # For daemon mode (not currently used)
 LOG_LEVEL=INFO          # DEBUG, INFO, WARNING, ERROR
 ```
@@ -196,17 +257,23 @@ LOG_LEVEL=INFO          # DEBUG, INFO, WARNING, ERROR
 ## How It Works
 
 1. **Email Fetching**: Connects to Gmail via IMAP and fetches all emails from "Receipts" folder
-2. **AI Extraction**: Sends receipt text to local MLX model (Qwen2.5-7B) for structured JSON extraction
-3. **Validation**:
+2. **Image Extraction**:
+   - Extracts image attachments from emails
+   - Parses HTML for `<img>` tags and downloads linked images
+   - Filters by size (100x100 to 2000x2000), file size (>10KB), URL patterns
+   - Matches images to extracted items
+3. **AI Extraction**: Sends receipt text to local MLX model (Qwen2.5-7B) for structured JSON extraction
+4. **Validation**:
    - AI provides initial confidence score (0.0-1.0)
    - System cross-checks item prices vs receipt total
    - Reduces confidence if price mismatch >20%
-4. **Homebox Integration**:
+5. **Homebox Integration**:
    - Gets "Unassigned" location ID from Homebox
    - Creates item with basic fields (name, description, quantity, location)
    - Immediately updates item with purchase details (price, date, manufacturer, etc.)
-5. **Results**:
-   - High confidence (≥0.7): Items added to Homebox
+   - Uploads product images (from email or DuckDuckGo search)
+6. **Results**:
+   - High confidence (≥0.7): Items added to Homebox with images
    - Low confidence (<0.7): Saved to `data/failed/` for manual review
    - All processed receipts logged to `data/processed/`
 
@@ -339,8 +406,15 @@ python run_once.py        # Process receipts
 
 ## Roadmap
 
+### Recently Completed ✅
+- 📸 **Image extraction & upload** (2025-10-08)
+  - Extracts images from email attachments
+  - Downloads images from HTML `<img>` tags
+  - DuckDuckGo search fallback when no email images
+  - Smart filtering by size, URL patterns, dimensions
+  - Automatic upload to Homebox items
+
 ### Planned Features
-- 📸 **Image extraction & upload** - Attach product images from emails to Homebox items
 - 📄 **Email PDF attachment** - Save original receipt email as PDF attachment
 - 📚 **Product manual finder** - Auto-find and attach product manuals
 - 📧 **Multi-provider support** - IMAP support for Outlook, Fastmail, etc.
@@ -361,3 +435,4 @@ Built with:
 - [MLX-LM](https://github.com/ml-explore/mlx-lm) - Apple Silicon optimized LLM inference
 - [Homebox](https://github.com/sysadminsmedia/homebox) - Home inventory management
 - [Qwen2.5-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct) - Base model
+- [DDGS](https://github.com/deedy5/ddgs) - DuckDuckGo search (for image fallback)

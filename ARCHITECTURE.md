@@ -4,7 +4,7 @@
 
 This system automatically processes receipt emails, extracts purchase data using local AI (MLX on Apple Silicon), and adds items to Homebox inventory management system.
 
-## Current State (2025-10-05)
+## Current State (2025-10-08)
 
 ### What's Working
 - ✅ Email fetching from Gmail IMAP (specific folder: "Receipts")
@@ -15,6 +15,9 @@ This system automatically processes receipt emails, extracts purchase data using
 - ✅ Automatic email organization (moves to success/manual subfolders)
 - ✅ One-time batch processing script (`run_once.py`)
 - ✅ Test scripts for debugging
+- ✅ **NEW:** Product image extraction from emails (attachments + linked images)
+- ✅ **NEW:** DuckDuckGo image search fallback
+- ✅ **NEW:** Automatic image upload to Homebox items
 
 ### Known Issues
 - Main daemon app (`src/app.py`) exists but `run_once.py` is recommended for manual runs
@@ -65,19 +68,39 @@ This system automatically processes receipt emails, extracts purchase data using
 - `get_location_id_by_name(name)` - Find location by name
 - `create_item(item_data)` - Two-step create + update
 
-#### 4. Main App (`src/app.py`)
+#### 4. Image Handler (`src/image_handler.py`)
+- Searches for product images using DuckDuckGo
+- Filters and validates images
+- Matches images to receipt items
+
+**Key Methods:**
+- `search_product_image(product_name, manufacturer)` - Search DuckDuckGo for product images
+- `get_best_image(images)` - Select best image from list
+- `match_images_to_items(images, items)` - Match images to items
+
+**Image Filtering:**
+- Size: 100x100 < dimensions < 2000x2000
+- File size: > 10KB
+- URL patterns: Exclude logos, tracking pixels, icons
+- Quality: Prefer larger images (by area)
+
+#### 5. Main App (`src/app.py`)
 - Orchestrates the full workflow
 - Processes receipts with confidence thresholds
 - Maps extracted data to Homebox format
 - Saves failed receipts for review
+- Handles image extraction and upload
 
 **Processing Flow:**
 1. Extract receipt data with MLX
 2. Check confidence (min 0.7)
 3. Get "Unassigned" location ID
-4. Map items to Homebox format
-5. Create items (two-step process)
-6. Move email based on result
+4. Extract images from email (attachments + HTML links)
+5. Match images to items
+6. Map items to Homebox format
+7. Create items (two-step process)
+8. Upload images to items (email images first, DuckDuckGo fallback)
+9. Move email based on result
 
 ### Configuration
 
@@ -114,11 +137,24 @@ MIN_CONFIDENCE=0.7
 
 ```
 Email (IMAP) → Email Fetcher → Receipt Extractor (MLX) → Validation
-                                                             ↓
-                                              Homebox Client ← App Logic
-                                                             ↓
-                                              Homebox API (two-step create)
+                     ↓                                       ↓
+                Extract Images                    Homebox Client ← App Logic
+                (attachments +                              ↓
+                 HTML links)                      Homebox API (two-step create)
+                     ↓                                       ↓
+                Match to Items                    Upload Images → Homebox API
+                     ↓                                       ↑
+             No images? ────────→ DuckDuckGo Search ────────┘
 ```
+
+**Image Handling Flow:**
+1. Email Fetcher extracts images from email (both attachments and HTML `<img>` tags)
+2. Images are validated by size, dimensions, and URL patterns
+3. Images are matched to extracted items (N largest images → N items)
+4. After creating items in Homebox:
+   - If email image available → upload to item
+   - If no email image → search DuckDuckGo for product image
+   - Upload found image to Homebox item as attachment
 
 ### Confidence Validation
 
@@ -148,15 +184,17 @@ The system validates extraction confidence in two ways:
 email-to-homebox/
 ├── src/
 │   ├── app.py              # Main application
-│   ├── email_fetcher.py    # IMAP email handling
+│   ├── email_fetcher.py    # IMAP email handling + image extraction
 │   ├── receipt_extractor_mlx.py  # MLX AI extraction
-│   └── homebox_client.py   # Homebox API client
+│   ├── homebox_client.py   # Homebox API client + attachment upload
+│   └── image_handler.py    # DuckDuckGo image search
 ├── config/
 │   └── config.yml          # Application configuration
 ├── data/
 │   ├── logs/               # Application logs
 │   ├── failed/             # Failed receipts for review
-│   └── processed/          # Successfully processed receipts
+│   ├── processed/          # Successfully processed receipts
+│   └── test_images/        # Test images (created by test_images.py)
 ├── run_once.py             # One-time batch processor
 ├── test_*.py               # Test scripts
 ├── .env                    # Environment variables (not in git)
@@ -201,8 +239,14 @@ Homebox API has limited fields on create endpoint:
 
 ### Future Improvements
 
+#### Completed (2025-10-08)
+- [x] **Image extraction & upload** - Find product images in emails and attach to Homebox items
+  - Extracts images from email attachments
+  - Downloads images from HTML `<img>` tags
+  - DuckDuckGo search fallback when no email images
+  - Automatic upload to Homebox items
+
 #### High Priority
-- [ ] **Image extraction & upload** - Find product images in emails and attach to Homebox items
 - [ ] **Email as PDF attachment** - Convert original receipt email to PDF and attach to item
 - [ ] **Product manual finder** - Search for and attach product manuals to items
 - [ ] **IMAP support for other providers** - Extend beyond Gmail (Outlook, Fastmail, etc.)
@@ -241,12 +285,30 @@ Homebox API has limited fields on create endpoint:
 - MLX model needs 4096 tokens for long Amazon product names
 - Price must be float in update request (not string)
 
-**Next Session - Start Here:**
+**Recently Completed (2025-10-08):**
 
-To work on **image extraction**:
-1. Look at `src/email_fetcher.py` `_extract_body()` method - extend to find attachments/images
-2. Check Homebox API docs for attachment upload endpoint
-3. May need to download images, then upload to Homebox
+✅ **Image extraction & upload** - COMPLETE
+- `src/email_fetcher.py` - Added `_extract_images()` method
+  - Extracts image attachments from emails
+  - Parses HTML for `<img>` tags and downloads linked images
+  - Filters by size (100x100 to 2000x2000), file size (>10KB), URL patterns
+  - Validates with Pillow
+- `src/homebox_client.py` - Added `upload_attachment()` method
+  - Multipart form upload to `/api/v1/items/{id}/attachments`
+  - Handles authentication and retry on 401
+- `src/image_handler.py` - NEW file for image search
+  - DuckDuckGo search fallback when no email images
+  - Image filtering and validation
+  - Matching images to items
+- `src/app.py` - Updated `process_receipt()` flow
+  - Extracts images from email
+  - Matches images to items
+  - Uploads to Homebox after item creation
+  - DuckDuckGo fallback if no email images
+- `config/config.yml` - Added `enable_image_search` setting
+- New dependencies: `Pillow>=10.0.0`, `duckduckgo-search>=5.0.0`
+
+**Next Session - Start Here:**
 
 To work on **email as PDF**:
 1. Research Python libraries: `weasyprint` or `pdfkit` for HTML→PDF conversion

@@ -42,12 +42,13 @@ ai:
         {
           "name": "Product name",
           "price": 29.99,
-          "description": "Optional extended description",
+          "description": "Optional extended description, but not duplicate information that's in other fields",
           "quantity": 1,
           "category": "electronics",
           "manufacturer": "Brand name (if available)",
           "model_number": "Model number (if available)",
           "serial_number": "Serial number (if available)"
+          "notes": "Any relevant information that doesn't fit elsewhere, like special care or use instructions"
         }
       ],
       "store": "Store name",
@@ -95,12 +96,30 @@ homebox:
 processing:
   # Minimum confidence score to auto-add (0.0 to 1.0)
   min_confidence: 0.7
-  
+
   # Maximum items per receipt (safety check)
   max_items_per_receipt: 50
-  
+
   # Save failed extractions for review
   save_failed: true
-  
+
   # Save all processed receipts
   save_processed: true
+
+  # Image search settings
+  enable_image_search: true             # Use DuckDuckGo fallback when no email images
+  image_search_delay: 2.5               # Seconds to wait between searches (rate limit protection)
+  max_image_searches_per_receipt: 3     # Max DuckDuckGo searches per receipt
+  image_search_min_price: 0.0           # Only search for items above this price (0 = search all)
+
+# Image backfill settings (for backfill_images.py script)
+backfill:
+  # Max items to process per run (prevents long runs hitting rate limits)
+  default_max_items: 5
+
+  # Skip items that already have images
+  skip_items_with_images: true
+
+  # Default location filter (leave empty for all locations)
+  # Example: "Unassigned" to only process items in Unassigned location
+  default_location_filter: ""
