@@ -7,11 +7,13 @@ import re
 import logging
 import email
 import requests
+import pdfplumber
 from io import BytesIO
 from email.header import decode_header
 from imapclient import IMAPClient
 from bs4 import BeautifulSoup
 from PIL import Image
+from image_handler import should_skip_image_by_filename
 
 logger = logging.getLogger(__name__)
 
@@ -108,13 +110,24 @@ class EmailFetcher:
             # Extract images
             images = self._extract_images(email_message)
 
-            return {
+            # Extract PDF attachments
+            pdf_data = self._extract_pdf_attachments(email_message)
+
+            email_dict = {
                 'subject': subject,
                 'from': from_addr,
                 'date': date,
                 'body': body,
                 'images': images
             }
+
+            # Add PDF data if found
+            if pdf_data:
+                email_dict['pdf_data'] = pdf_data['pdf_data']
+                email_dict['pdf_text'] = pdf_data['pdf_text']
+                email_dict['pdf_filename'] = pdf_data['pdf_filename']
+
+            return email_dict
         except Exception as e:
             logger.error(f"Error parsing email: {e}")
             return None
@@ -140,33 +153,40 @@ class EmailFetcher:
     
     def _extract_body(self, email_message):
         """Extract email body (text and HTML)"""
-        body = ''
-        
+        plain_body = ''
+        html_body = ''
+
         if email_message.is_multipart():
             for part in email_message.walk():
                 content_type = part.get_content_type()
-                
-                if content_type == 'text/plain':
+
+                if content_type == 'text/plain' and not plain_body:
                     try:
-                        body = part.get_payload(decode=True).decode('utf-8', errors='ignore')
-                        break
+                        plain_body = part.get_payload(decode=True).decode('utf-8', errors='ignore')
                     except:
                         pass
-                elif content_type == 'text/html' and not body:
+                elif content_type == 'text/html' and not html_body:
                     try:
                         html = part.get_payload(decode=True).decode('utf-8', errors='ignore')
                         # Convert HTML to text
                         soup = BeautifulSoup(html, 'lxml')
-                        body = soup.get_text(separator='\n', strip=True)
+                        html_body = soup.get_text(separator='\n', strip=True)
                     except:
                         pass
         else:
             try:
-                body = email_message.get_payload(decode=True).decode('utf-8', errors='ignore')
+                plain_body = email_message.get_payload(decode=True).decode('utf-8', errors='ignore')
             except:
                 pass
-        
-        return body
+
+        # Prefer HTML if plain text is too short/minimal (less than 1000 chars)
+        # This handles cases like Best Buy where plain text is just a link
+        if html_body and (not plain_body or len(plain_body) < 1000):
+            logger.debug(f"Using HTML body (plain text too short: {len(plain_body)} chars)")
+            return html_body
+
+        # Otherwise use plain text (more readable for LLM)
+        return plain_body if plain_body else html_body
 
     def _extract_images(self, email_message):
         """Extract and download product images from email"""
@@ -237,6 +257,11 @@ class EmailFetcher:
             except Exception as e:
                 logger.debug(f"Error parsing HTML for images: {e}")
 
+        # Sort images: prioritize HTML-linked images over attachments
+        # Web images (html_link) are more likely to be product photos
+        # Attachments are often logos or tracking pixels
+        images.sort(key=lambda x: 0 if x['source'] == 'html_link' else 1)
+
         # Third pass: validate and filter images by dimensions
         filtered_images = []
         for img_data in images:
@@ -244,11 +269,19 @@ class EmailFetcher:
                 image = Image.open(BytesIO(img_data['data']))
                 width, height = image.size
 
-                # Filter by size: 100x100 < size < 2000x2000
-                if 100 < width < 2000 and 100 < height < 2000:
+                # Filter by size: 100x100 < size <= 4000x4000
+                # Allow up to 4000px for high-quality product photos
+                if 100 < width <= 4000 and 100 < height <= 4000:
                     img_data['width'] = width
                     img_data['height'] = height
                     img_data['size'] = len(img_data['data'])
+
+                    # Filter by filename patterns (logos, icons, etc.)
+                    filename = img_data.get('filename', '')
+                    if should_skip_image_by_filename(filename):
+                        logger.debug(f"Filtered out image by filename: {filename}")
+                        continue
+
                     filtered_images.append(img_data)
                     logger.debug(f"Validated image: {width}x{height}, {img_data['source']}")
                 else:
@@ -256,8 +289,8 @@ class EmailFetcher:
             except Exception as e:
                 logger.debug(f"Error validating image: {e}")
 
-        # Sort by area (largest first) - likely product images are bigger
-        filtered_images.sort(key=lambda x: x['width'] * x['height'], reverse=True)
+        # Keep images in order found - first image is usually the product image
+        # (not sorting by size, as that can prioritize wrong images)
 
         logger.info(f"Extracted {len(filtered_images)} product images from email")
         return filtered_images
@@ -290,6 +323,61 @@ class EmailFetcher:
 
         # Otherwise, don't skip (neutral URLs)
         return False
+
+    def _extract_pdf_attachments(self, email_message):
+        """
+        Extract PDF attachments and extract text from them.
+
+        Returns:
+            dict with keys: pdf_data (bytes), pdf_text (str), pdf_filename (str)
+            or None if no PDF found
+        """
+        if not email_message.is_multipart():
+            return None
+
+        for part in email_message.walk():
+            content_type = part.get_content_type()
+
+            # Look for PDF attachments
+            if content_type == 'application/pdf':
+                try:
+                    pdf_data = part.get_payload(decode=True)
+                    filename = part.get_filename() or 'receipt.pdf'
+
+                    if not pdf_data:
+                        continue
+
+                    logger.info(f"Found PDF attachment: {filename} ({len(pdf_data)} bytes)")
+
+                    # Extract text from PDF
+                    try:
+                        pdf_text = ""
+                        with pdfplumber.open(BytesIO(pdf_data)) as pdf:
+                            for page_num, page in enumerate(pdf.pages, 1):
+                                text = page.extract_text()
+                                if text:
+                                    pdf_text += f"\n--- Page {page_num} ---\n{text}\n"
+
+                        if pdf_text.strip():
+                            logger.info(f"Extracted {len(pdf_text)} characters from PDF")
+                            return {
+                                'pdf_data': pdf_data,
+                                'pdf_text': pdf_text,
+                                'pdf_filename': filename
+                            }
+                        else:
+                            logger.warning(f"PDF {filename} has no extractable text")
+                            return None
+
+                    except Exception as e:
+                        logger.error(f"Failed to extract text from PDF {filename}: {e}")
+                        return None  # Treat as extraction failure
+
+                except Exception as e:
+                    logger.error(f"Error processing PDF attachment: {e}")
+                    return None
+
+        return None  # No PDF found
 
     def _is_receipt(self, email_data):
         """Check if email is likely a receipt"""

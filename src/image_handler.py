@@ -12,6 +12,49 @@ from ddgs import DDGS
 logger = logging.getLogger(__name__)
 
 
+def should_skip_image_by_filename(filename):
+    """
+    Check if an image should be skipped based on filename patterns
+
+    Images with these patterns in the filename are likely logos, icons,
+    tracking pixels, or other non-product images.
+
+    Args:
+        filename: The image filename or URL
+
+    Returns:
+        bool: True if image should be skipped, False if it looks like a product image
+    """
+    if not filename:
+        return False
+
+    filename_lower = filename.lower()
+
+    # Patterns that indicate non-product images
+    skip_patterns = [
+        'logo',
+        'icon',
+        'badge',
+        'button',
+        'banner',
+        'pixel',
+        'track',
+        'spacer',
+        'dot',
+        'transparent',
+        'blank',
+        '1x1',
+        'email_logo',  # Common in email templates
+    ]
+
+    for pattern in skip_patterns:
+        if pattern in filename_lower:
+            logger.debug(f"Skipping image with '{pattern}' in filename: {filename}")
+            return True
+
+    return False
+
+
 def search_product_image(product_name, manufacturer=None, max_results=3, max_retries=3):
     """
     Search for product images using DuckDuckGo with retry logic
@@ -27,9 +70,9 @@ def search_product_image(product_name, manufacturer=None, max_results=3, max_ret
     """
     # Build search query
     if manufacturer:
-        query = f"{manufacturer} {product_name} product"
+        query = f"{manufacturer} {product_name}"
     else:
-        query = f"{product_name} product"
+        query = f"{product_name}"
 
     logger.debug(f"Searching DuckDuckGo for: {query}")
 
@@ -41,8 +84,6 @@ def search_product_image(product_name, manufacturer=None, max_results=3, max_ret
                 results = ddgs.images(
                     query=query,
                     max_results=max_results * 2,  # Get extra to filter
-                    layout="square",
-                    size="medium",
                 )
 
             images = []
@@ -73,8 +114,9 @@ def search_product_image(product_name, manufacturer=None, max_results=3, max_ret
                         image = Image.open(BytesIO(image_data))
                         width, height = image.size
 
-                        # Filter by size: 100x100 < size < 2000x2000
-                        if not (100 < width < 2000 and 100 < height < 2000):
+                        # Filter by size: 100x100 < size <= 4000x4000
+                        # Allow up to 4000px for high-quality product photos
+                        if not (100 < width <= 4000 and 100 < height <= 4000):
                             logger.debug(f"Skipping image with dimensions: {width}x{height}")
                             continue
 
@@ -139,16 +181,14 @@ def get_best_image(images, preferred_min_size=200):
     if not images:
         return None
 
-    # Sort by area (width * height), prefer larger images
-    sorted_images = sorted(images, key=lambda x: x['width'] * x['height'], reverse=True)
-
-    # Try to find an image with preferred minimum size
-    for img in sorted_images:
+    # Use first-wins logic: first image is usually the most relevant
+    # Try to find the first image with preferred minimum size
+    for img in images:
         if img['width'] >= preferred_min_size and img['height'] >= preferred_min_size:
             return img
 
-    # If no image meets preferred size, return the largest one
-    return sorted_images[0]
+    # If no image meets preferred size, return the first one
+    return images[0]
 
 
 def match_images_to_items(images, items):
@@ -165,15 +205,13 @@ def match_images_to_items(images, items):
     if not images or not items:
         return {}
 
-    # Simple strategy: assign N largest images to N items (where N = min(images, items))
+    # Simple strategy: assign first N images to N items (where N = min(images, items))
+    # First image is usually the most relevant product image
     num_matches = min(len(images), len(items))
-
-    # Sort images by area (largest first)
-    sorted_images = sorted(images, key=lambda x: x['width'] * x['height'], reverse=True)
 
     matches = {}
     for i in range(num_matches):
-        matches[i] = sorted_images[i]
+        matches[i] = images[i]
 
     logger.info(f"Matched {num_matches} image(s) to receipt items")
     return matches

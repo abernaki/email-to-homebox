@@ -9,6 +9,7 @@ import sys
 import time
 import logging
 import yaml
+import requests
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
@@ -50,6 +51,36 @@ def load_config():
         raise
 
 
+def is_all_consumable(receipt_data, config):
+    """
+    Check if all items in receipt are consumable
+
+    Args:
+        receipt_data: Extracted receipt data with items
+        config: Application config
+
+    Returns:
+        tuple: (is_consumable: bool, categories: list)
+    """
+    processing_config = config.get('processing', {})
+    consumable_categories = processing_config.get('consumable_categories', [])
+
+    if not consumable_categories:
+        return False, []
+
+    items = receipt_data.get('items', [])
+    if not items:
+        return False, []
+
+    # Get all item categories
+    item_categories = [item.get('category', 'other') for item in items]
+
+    # Check if all items are in consumable categories
+    all_consumable = all(cat in consumable_categories for cat in item_categories)
+
+    return all_consumable, item_categories
+
+
 def process_receipt(email_data, extractor, homebox, config):
     """Process a single receipt email"""
     try:
@@ -71,6 +102,15 @@ def process_receipt(email_data, extractor, homebox, config):
             logger.warning(f"Low confidence ({confidence:.2f} < {min_confidence})")
             save_failed_receipt(email_data, "low_confidence", receipt_data)
             return {'status': 'low_confidence', 'confidence': confidence}
+
+        # Check if all items are consumable
+        processing_config = config.get('processing', {})
+        if processing_config.get('skip_consumables', False):
+            is_consumable, categories = is_all_consumable(receipt_data, config)
+            if is_consumable:
+                logger.info(f"All items are consumable (categories: {', '.join(set(categories))}), skipping")
+                save_processed_receipt(email_data, receipt_data)  # Save for reference
+                return {'status': 'consumable', 'categories': categories}
 
         # Get the default location ID
         default_location = config['homebox'].get('default_location', 'Unassigned')
@@ -96,6 +136,11 @@ def process_receipt(email_data, extractor, homebox, config):
 
         for idx, item in enumerate(receipt_data.get('items', [])):
             try:
+                # Skip non-physical items (subscriptions, memberships, etc.)
+                if is_non_physical_item(item, config):
+                    logger.info(f"⊘ Skipping non-physical item: {item['name']}")
+                    continue
+
                 homebox_item = map_to_homebox_item(item, receipt_data, config, location_id)
                 result = homebox.create_item(homebox_item)
 
@@ -120,7 +165,14 @@ def process_receipt(email_data, extractor, homebox, config):
         # Upload images to created items
         if created_items:
             upload_images_to_items(created_items, image_matches, homebox, config)
-        
+
+        # Upload PDF to first item if available
+        if created_items and 'pdf_data' in email_data:
+            first_item_id = upload_pdf_to_first_item(created_items, email_data, homebox)
+            # Add cross-references to other items
+            if first_item_id and len(created_items) > 1:
+                add_pdf_cross_references(created_items, first_item_id, homebox)
+
         # Save processed receipt
         if config['processing']['save_processed']:
             save_processed_receipt(email_data, receipt_data)
@@ -132,6 +184,68 @@ def process_receipt(email_data, extractor, homebox, config):
         logger.error(f"Error processing receipt: {e}", exc_info=True)
         save_failed_receipt(email_data, str(e))
         return {'status': 'failed', 'reason': str(e)}
+
+
+def sanitize_item_name(name):
+    """
+    Sanitize item name to remove characters that might cause Homebox issues
+
+    Replaces trademark symbols and other special characters that might
+    cause problems with database queries or UI display.
+    """
+    if not name:
+        return name
+
+    # Replace common trademark/copyright symbols
+    replacements = {
+        '™': '',  # Trademark
+        '®': '',  # Registered trademark
+        '©': '',  # Copyright
+    }
+
+    sanitized = name
+    for char, replacement in replacements.items():
+        sanitized = sanitized.replace(char, replacement)
+
+    # Clean up multiple spaces that might result from removing symbols
+    sanitized = ' '.join(sanitized.split())
+
+    return sanitized
+
+
+def is_non_physical_item(item, config):
+    """
+    Detect if an item is non-physical (subscription, membership, digital item, etc.)
+
+    Args:
+        item: Item dict with 'name', 'category', 'description', etc.
+        config: Configuration dict
+
+    Returns:
+        bool: True if item is non-physical and should be skipped
+    """
+    processing_config = config.get('processing', {})
+
+    # Check if filtering is enabled
+    if not processing_config.get('skip_non_physical', False):
+        return False
+
+    # Check category
+    non_physical_categories = processing_config.get('non_physical_categories', [])
+    if item.get('category') in non_physical_categories:
+        logger.debug(f"Item '{item.get('name')}' is non-physical (category: {item.get('category')})")
+        return True
+
+    # Check keywords in name and description
+    non_physical_keywords = processing_config.get('non_physical_keywords', [])
+    item_text = f"{item.get('name', '')} {item.get('description', '')}".lower()
+
+    for keyword in non_physical_keywords:
+        if keyword.lower() in item_text:
+            logger.debug(f"Item '{item.get('name')}' is non-physical (keyword: {keyword})")
+            return True
+
+    return False
 
 
 def map_to_homebox_item(item, receipt_data, config, location_id):
@@ -151,8 +265,11 @@ def map_to_homebox_item(item, receipt_data, config, location_id):
     if item.get('description'):
         notes = f"{item['description']}\n\n{notes}"
 
+    # Sanitize item name to avoid issues with special characters
+    item_name = sanitize_item_name(item['name'])
+
     homebox_item = {
-        'name': item['name'],
+        'name': item_name,
         'description': notes,
         'quantity': item.get('quantity', 1),
         'locationId': location_id
@@ -196,6 +313,22 @@ def upload_images_to_items(created_items, image_matches, homebox, config):
     search_delay = processing_config.get('image_search_delay', 2.5)
     max_searches = processing_config.get('max_image_searches_per_receipt', 3)
     min_price = processing_config.get('image_search_min_price', 0.0)
+
+    # Check if we should label items with AI-populated images
+    label_ai_images = processing_config.get('label_ai_images', True)
+    label_name = processing_config.get('ai_image_label_name', 'Verify Image')
+
+    # Ensure label exists if labeling is enabled
+    label_id = None
+    if label_ai_images:
+        label_id = homebox.ensure_label_exists(
+            label_name,
+            description="Items with AI-populated images that need manual verification",
+            color="#F59E0B"  # Orange color for attention
+        )
+        if not label_id:
+            logger.warning(f"Failed to create/find label '{label_name}', labeling disabled")
+            label_ai_images = False
 
     search_count = 0
 
@@ -251,12 +384,130 @@ def upload_images_to_items(created_items, image_matches, homebox, config):
                 )
                 if result:
                     logger.info(f"✓ Uploaded image for: {item_name}")
+
+                    # Add label if enabled
+                    if label_ai_images and label_id:
+                        if homebox.add_label_to_item(item_id, label_id):
+                            logger.debug(f"✓ Added '{label_name}' label to: {item_name}")
+                        else:
+                            logger.warning(f"Failed to add '{label_name}' label to: {item_name}")
                 else:
                     logger.warning(f"Failed to upload image for: {item_name}")
             except Exception as e:
                 logger.error(f"Error uploading image for {item_name}: {e}")
         else:
             logger.debug(f"No image available for: {item_name}")
+
+
+def upload_pdf_to_first_item(created_items, email_data, homebox):
+    """
+    Upload PDF receipt to the first created item.
+
+    Args:
+        created_items: List of created item dicts with 'id' and 'name'
+        email_data: Email data dict containing pdf_data and pdf_filename
+        homebox: HomeboxClient instance
+
+    Returns:
+        str: The ID of the first item, or None if upload failed
+    """
+    if not created_items:
+        return None
+
+    first_item = created_items[0]
+    item_id = first_item['id']
+    item_name = first_item['name']
+
+    pdf_data = email_data.get('pdf_data')
+    pdf_filename = email_data.get('pdf_filename', 'receipt.pdf')
+
+    if not pdf_data:
+        return None
+
+    try:
+        logger.info(f"Uploading PDF receipt to first item: {item_name} [ID: {item_id}]")
+        result = homebox.upload_attachment(
+            item_id=item_id,
+            image_data=pdf_data,
+            filename=pdf_filename,
+            attachment_type="attachment"
+        )
+
+        if result:
+            logger.info(f"✓ Uploaded PDF receipt to: {item_name}")
+            return item_id
+        else:
+            logger.warning(f"Failed to upload PDF to: {item_name}")
+            return None
+
+    except Exception as e:
+        logger.error(f"Error uploading PDF to {item_name}: {e}")
+        return None
+
+
+def add_pdf_cross_references(created_items, first_item_id, homebox):
+    """
+    Add cross-reference notes to items 2+ pointing to first item with PDF.
+
+    Args:
+        created_items: List of created item dicts with 'id', 'name'
+        first_item_id: ID of the first item (which has the PDF attached)
+        homebox: HomeboxClient instance
+    """
+    if len(created_items) <= 1:
+        return
+
+    # Get Homebox URL for creating link
+    homebox_url = homebox.base_url
+
+    for item_info in created_items[1:]:  # Skip first item
+        item_id = item_info['id']
+        item_name = item_info['name']
+
+        try:
+            # Get current item details
+            item_data = homebox.get_item(item_id)
+            if not item_data:
+                logger.warning(f"Could not fetch item {item_name} for cross-reference update")
+                continue
+
+            # Prepare update with cross-reference note
+            current_description = item_data.get('description', '')
+
+            # Add cross-reference to description
+            cross_ref_note = f"\n\nReceipt PDF attached to: {homebox_url}/item/{first_item_id}"
+
+            # Only add if not already present
+            if first_item_id not in current_description:
+                updated_description = current_description + cross_ref_note
+
+                # IMPORTANT: Include ALL fields in PUT request to avoid resetting values
+                update_data = {
+                    'name': item_data.get('name'),
+                    'locationId': item_data.get('location', {}).get('id'),
+                    'description': updated_description,
+                    'quantity': item_data.get('quantity', 0),
+                    'purchasePrice': item_data.get('purchasePrice', 0),
+                    'purchaseFrom': item_data.get('purchaseFrom', ''),
+                    'purchaseTime': item_data.get('purchaseTime', ''),
+                    'manufacturer': item_data.get('manufacturer', ''),
+                }
+
+                # Send update request
+                response = requests.put(
+                    f"{homebox_url}/api/v1/items/{item_id}",
+                    headers=homebox.headers,
+                    json=update_data,
+                    timeout=30
+                )
+
+                if response.status_code == 200:
+                    logger.info(f"✓ Added PDF cross-reference to: {item_name}")
+                else:
+                    logger.warning(f"Failed to add cross-reference to {item_name}: {response.status_code}")
+
+        except Exception as e:
+            logger.error(f"Error adding cross-reference to {item_name}: {e}")
 
 
 def save_failed_receipt(email_data, reason, extracted_data=None):
@@ -367,6 +618,12 @@ def main():
                         if manual_folder:
                             logger.info(f"Moving low confidence email to '{manual_folder}'")
                             email_fetcher.move_to_folder(email_data['uid'], manual_folder)
+                    elif result['status'] == 'consumable':
+                        # Move to consumables folder
+                        consumable_folder = config['email'].get('move_to_folder_on_consumable', 'Receipts/Consumables')
+                        if consumable_folder:
+                            logger.info(f"Moving consumable email to '{consumable_folder}'")
+                            email_fetcher.move_to_folder(email_data['uid'], consumable_folder)
             else:
                 logger.debug("No new receipts found")
             

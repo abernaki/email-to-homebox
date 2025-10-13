@@ -145,6 +145,16 @@ class HomeboxClient:
                     if update_response.status_code == 200:
                         result = update_response.json()
                         logger.debug(f"✓ Updated item with additional fields")
+                        # Debug: Check what Homebox returned
+                        logger.debug(f"Homebox returned quantity: {result.get('quantity')}, price: {result.get('purchasePrice')}")
+
+                        # Double-check: Fetch the item back to verify it was actually saved
+                        verify = self.get_item(item_id)
+                        if verify:
+                            logger.info(f"VERIFICATION - Fetched item back from Homebox:")
+                            logger.info(f"  Name: {verify.get('name')}")
+                            logger.info(f"  Quantity: {verify.get('quantity')}")
+                            logger.info(f"  Price: {verify.get('purchasePrice')}")
                     else:
                         logger.warning(f"Failed to update item fields: {update_response.status_code}")
                         logger.debug(f"Update response: {update_response.text}")
@@ -340,3 +350,153 @@ class HomeboxClient:
         except requests.exceptions.RequestException as e:
             logger.error(f"Error uploading attachment: {e}")
             return None
+
+    def create_label(self, name, description="", color="#3B82F6"):
+        """
+        Create a new label in Homebox
+
+        Args:
+            name: Label name
+            description: Optional description
+            color: Hex color code (default: blue)
+
+        Returns:
+            Label data with ID, or None if failed
+        """
+        try:
+            data = {
+                'name': name,
+                'description': description,
+                'color': color
+            }
+
+            response = requests.post(
+                f"{self.base_url}/api/v1/labels",
+                headers=self.headers,
+                json=data,
+                timeout=10
+            )
+
+            if response.status_code == 201:
+                result = response.json()
+                logger.info(f"✓ Created label: {name} (ID: {result.get('id')})")
+                return result
+            else:
+                logger.error(f"Failed to create label '{name}': {response.status_code}")
+                return None
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error creating label: {e}")
+            return None
+
+    def get_label_by_name(self, name):
+        """
+        Find a label by name
+
+        Args:
+            name: Label name to search for
+
+        Returns:
+            Label data with ID, or None if not found
+        """
+        labels = self.get_labels()
+        if not labels:
+            return None
+
+        for label in labels:
+            if label.get('name', '').lower() == name.lower():
+                return label
+
+        return None
+
+    def ensure_label_exists(self, name, description="", color="#3B82F6"):
+        """
+        Get label by name, or create if it doesn't exist
+
+        Args:
+            name: Label name
+            description: Description (used if creating)
+            color: Color (used if creating)
+
+        Returns:
+            Label ID, or None if failed
+        """
+        # Try to find existing label
+        label = self.get_label_by_name(name)
+        if label:
+            logger.debug(f"Found existing label: {name} (ID: {label.get('id')})")
+            return label.get('id')
+
+        # Create new label
+        logger.info(f"Creating new label: {name}")
+        label = self.create_label(name, description, color)
+        if label:
+            return label.get('id')
+
+        return None
+
+    def add_label_to_item(self, item_id, label_id):
+        """
+        Add a label to an item
+
+        Args:
+            item_id: Item ID
+            label_id: Label ID to add
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Get current item to retrieve existing labels
+            item = self.get_item(item_id)
+            if not item:
+                logger.error(f"Could not fetch item {item_id}")
+                return False
+
+            # Get current label IDs
+            current_labels = item.get('labels', [])
+            current_label_ids = [label.get('id') for label in current_labels if label.get('id')]
+
+            # Add new label if not already present
+            if label_id in current_label_ids:
+                logger.debug(f"Label {label_id} already on item {item_id}")
+                return True
+
+            current_label_ids.append(label_id)
+
+            # Update item with new labels
+            # IMPORTANT: Include ALL fields in PUT request to avoid resetting values
+            update_data = {
+                'name': item.get('name'),
+                'locationId': item.get('location', {}).get('id'),
+                'labelIds': current_label_ids,
+                'description': item.get('description', ''),
+                'quantity': item.get('quantity', 0),
+                'purchasePrice': item.get('purchasePrice', 0),
+                'purchaseFrom': item.get('purchaseFrom', ''),
+                'purchaseTime': item.get('purchaseTime', ''),
+                'manufacturer': item.get('manufacturer', ''),
+                'modelNumber': item.get('modelNumber', ''),
+                'serialNumber': item.get('serialNumber', ''),
+                'notes': item.get('notes', ''),
+                'warrantyDetails': item.get('warrantyDetails', ''),
+                'warrantyExpires': item.get('warrantyExpires', '')
+            }
+
+            response = requests.put(
+                f"{self.base_url}/api/v1/items/{item_id}",
+                headers=self.headers,
+                json=update_data,
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                logger.debug(f"✓ Added label {label_id} to item {item_id}")
+                return True
+            else:
+                logger.error(f"Failed to add label to item: {response.status_code}")
+                return False
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error adding label to item: {e}")
+            return False

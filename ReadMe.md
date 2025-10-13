@@ -16,6 +16,7 @@ Automatically extract purchase data from email receipts using local AI (MLX on A
 - ⚡️ **Fast** - leverages Apple's Metal GPU for quick inference (~2-3 sec per receipt)
 - 📊 **Smart validation** - cross-checks item prices vs receipt total, adjusts confidence
 - 🎯 **Confidence scoring** - only processes high-confidence extractions (≥0.7)
+- 🍎 **Consumable filtering** - automatically skip receipts for food/supplies, organize separately
 - 📝 **Comprehensive logging** - failed receipts saved for manual review
 
 ## What It Extracts
@@ -97,7 +98,7 @@ See [IMAP_PROVIDERS.md](IMAP_PROVIDERS.md) for detailed setup instructions for e
 
 **Email Folder Setup:**
 1. Create a folder/label called "Receipts" in your email
-2. Create subfolders: "Receipts/Receipts (in Homebox)" and "Receipts/Receipts (process manually)"
+2. Create subfolders: "Receipts/Receipts (in Homebox)", "Receipts/Receipts (process manually)", and "Receipts/Consumables"
 3. Move some receipt emails to the "Receipts" folder
 
 ### 3. Test
@@ -217,6 +218,7 @@ email:
   # Email moving (optional, currently disabled in run_once.py)
   move_to_folder_on_success: "Receipts/Receipts (in Homebox)"
   move_to_folder_on_low_confidence: "Receipts/Receipts (process manually)"
+  move_to_folder_on_consumable: "Receipts/Consumables"
 ```
 
 **Note:** Subject patterns and sender domains are in the config but currently ALL emails in the configured folder are processed (no filtering).
@@ -255,6 +257,14 @@ processing:
   enable_image_search: true    # Use DuckDuckGo fallback when no email images
   save_processed: true         # Save processed receipts to data/processed/
   save_failed: true            # Save failed receipts to data/failed/
+
+  # Consumable filtering - skip receipts that only contain food/supplies
+  skip_consumables: true       # Enable consumable filtering
+  consumable_categories:       # Categories to consider consumable
+    - food                     # Food, groceries, snacks
+    # - health                 # Uncomment to also skip medicine, toiletries, vitamins
+  # Note: Receipts are skipped only if ALL items are consumable
+  # Mixed receipts (e.g., TV + snacks) will still be processed
 ```
 
 In `.env`:
@@ -277,14 +287,20 @@ LOG_LEVEL=INFO          # DEBUG, INFO, WARNING, ERROR
    - AI provides initial confidence score (0.0-1.0)
    - System cross-checks item prices vs receipt total
    - Reduces confidence if price mismatch >20%
-5. **Homebox Integration**:
+5. **Consumable Filtering**:
+   - Checks if all items are consumable (food, cleaning supplies, etc.)
+   - Skips adding to Homebox if all items are consumable
+   - Mixed receipts (e.g., TV + snacks) still get processed
+   - Consumable receipts moved to separate folder for organization
+6. **Homebox Integration**:
    - Gets "Unassigned" location ID from Homebox
    - Creates item with basic fields (name, description, quantity, location)
    - Immediately updates item with purchase details (price, date, manufacturer, etc.)
    - Uploads product images (from email or DuckDuckGo search)
-6. **Results**:
+7. **Results**:
    - High confidence (≥0.7): Items added to Homebox with images
    - Low confidence (<0.7): Saved to `data/failed/` for manual review
+   - Consumable receipts: Skipped and moved to `Receipts/Consumables`
    - All processed receipts logged to `data/processed/`
 
 ## Usage Modes
@@ -383,11 +399,13 @@ This is handled automatically by `homebox_client.py`.
 Successfully processed receipts are automatically moved to organized subfolders:
 - **High confidence (≥0.7)**: Moved to `Receipts/Receipts (in Homebox)`
 - **Low confidence (<0.7)**: Moved to `Receipts/Receipts (process manually)`
+- **Consumable items only**: Moved to `Receipts/Consumables` (not added to Homebox)
 - **Failed extraction**: Stays in original `Receipts` folder
 
 **Important:** Create these subfolders before running:
 1. `Receipts/Receipts (in Homebox)`
 2. `Receipts/Receipts (process manually)`
+3. `Receipts/Consumables`
 
 **Note:** Most email providers (Gmail, Outlook, iCloud, Fastmail) use "/" for nested folders. If email moving fails, check [IMAP_PROVIDERS.md](IMAP_PROVIDERS.md) for your provider's folder naming convention.
 
@@ -424,6 +442,11 @@ python run_once.py        # Process receipts
   - DuckDuckGo search fallback when no email images
   - Smart filtering by size, URL patterns, dimensions
   - Automatic upload to Homebox items
+- 🍎 **Consumable filtering** (2025-10-09)
+  - Automatically skip receipts with only consumable items (food, cleaning supplies)
+  - Configurable categories (food, health, etc.)
+  - Only skips if ALL items are consumable - mixed receipts still processed
+  - Moves consumable receipts to separate folder for organization
 
 ### Planned Features
 - 📄 **Email PDF attachment** - Save original receipt email as PDF attachment

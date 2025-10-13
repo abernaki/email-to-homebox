@@ -6,6 +6,8 @@ This script searches for and uploads product images to existing items in your
 Homebox inventory. Useful for testing image search and adding images to items
 that were created without them.
 
+Images are filtered by filename patterns to skip logos and icons.
+
 Usage:
     python backfill_images.py                         # Process 5 items (default)
     python backfill_images.py --max-items 10          # Process 10 items
@@ -134,7 +136,23 @@ def backfill_images(items, config, dry_run=False):
     processing_config = config.get('processing', {})
     search_delay = processing_config.get('image_search_delay', 2.5)
 
+    # Check if we should label items with AI-populated images
+    label_ai_images = processing_config.get('label_ai_images', True)
+    label_name = processing_config.get('ai_image_label_name', 'Verify Image')
+
     homebox = HomeboxClient()
+
+    # Ensure label exists if labeling is enabled
+    label_id = None
+    if label_ai_images and not dry_run:
+        label_id = homebox.ensure_label_exists(
+            label_name,
+            description="Items with AI-populated images that need manual verification",
+            color="#F59E0B"  # Orange color for attention
+        )
+        if not label_id:
+            logger.warning(f"Failed to create/find label '{label_name}', labeling disabled")
+            label_ai_images = False
 
     results = {
         'success': 0,
@@ -165,6 +183,7 @@ def backfill_images(items, config, dry_run=False):
             continue
 
         try:
+            # Search for image (get just 1 result, filtering handled by search function)
             search_results = search_product_image(item_name, manufacturer, max_results=1)
 
             if not search_results:
@@ -173,7 +192,7 @@ def backfill_images(items, config, dry_run=False):
                 continue
 
             image = search_results[0]
-            logger.info(f"  ✓ Found image ({image['width']}x{image['height']}, {image['size']:,} bytes)")
+            logger.info(f"  ✓ Using image ({image['width']}x{image['height']}, {image['size']:,} bytes)")
 
             # Upload image
             logger.info(f"  Uploading image...")
@@ -187,6 +206,13 @@ def backfill_images(items, config, dry_run=False):
             if result:
                 logger.info(f"  ✓ Successfully uploaded image")
                 results['success'] += 1
+
+                # Add label if enabled
+                if label_ai_images and label_id:
+                    if homebox.add_label_to_item(item_id, label_id):
+                        logger.debug(f"  ✓ Added '{label_name}' label")
+                    else:
+                        logger.warning(f"  Failed to add '{label_name}' label")
             else:
                 logger.warning(f"  ✗ Failed to upload image")
                 results['failed'] += 1

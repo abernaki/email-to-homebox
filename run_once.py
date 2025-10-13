@@ -76,6 +76,7 @@ def main():
     # Process each email
     success_count = 0
     low_conf_count = 0
+    consumable_count = 0
     failed_count = 0
 
     for i, email_data in enumerate(emails, 1):
@@ -89,7 +90,7 @@ def main():
             # Move to success folder if configured
             move_folder = config['email'].get('move_to_folder_on_success')
             if move_folder:
-                email_fetcher.move_to_folder(email_data['uid'], move_folder)
+                # email_fetcher.move_to_folder(email_data['uid'], move_folder)
                 logger.info(f"✓ Moved to '{move_folder}'\n")
             else:
                 logger.info(f"✓ Successfully processed\n")
@@ -102,6 +103,15 @@ def main():
                 logger.info(f"⚠ Low confidence - moved to '{manual_folder}'\n")
             else:
                 logger.info(f"⚠ Low confidence\n")
+        elif result['status'] == 'consumable':
+            consumable_count += 1
+            # Move to consumables folder
+            consumable_folder = config['email'].get('move_to_folder_on_consumable', 'Receipts/Consumables')
+            if consumable_folder:
+                email_fetcher.move_to_folder(email_data['uid'], consumable_folder)
+                logger.info(f"⊝ Consumable items - moved to '{consumable_folder}'\n")
+            else:
+                logger.info(f"⊝ Consumable items - skipped\n")
         else:
             failed_count += 1
             logger.error(f"✗ Failed to process\n")
@@ -112,6 +122,7 @@ def main():
     logger.info("=" * 60)
     logger.info(f"Successfully processed: {success_count}")
     logger.info(f"Low confidence (manual): {low_conf_count}")
+    logger.info(f"Consumables (skipped): {consumable_count}")
     logger.info(f"Failed: {failed_count}")
     logger.info(f"Total: {len(emails)}")
 

@@ -6,6 +6,9 @@ Uses MLX-LM for fast local inference on Apple Silicon
 import os
 import json
 import logging
+import re
+import html
+import quopri
 from mlx_lm import load, generate
 
 logger = logging.getLogger(__name__)
@@ -36,16 +39,88 @@ class ReceiptExtractor:
         except Exception as e:
             logger.error(f"Failed to load MLX model: {e}")
             raise
-    
+
+    def _clean_email_text(self, text):
+        """
+        Clean and decode email text for better LLM parsing.
+
+        Handles:
+        - Quoted-printable encoding (=3D, =C3=97, etc.)
+        - HTML entities (&nbsp;, &amp;, etc.)
+        - Excessive whitespace
+        - Line break artifacts
+
+        Args:
+            text: Raw email text
+
+        Returns:
+            Cleaned text string
+        """
+        if not text:
+            return text
+
+        try:
+            # Decode quoted-printable encoding
+            # This converts =3D to =, =C3=97 to ×, etc.
+            if '=3D' in text or '=C3' in text or '=20' in text:
+                # Convert to bytes, decode, convert back to string
+                text_bytes = text.encode('utf-8', errors='ignore')
+                decoded_bytes = quopri.decodestring(text_bytes)
+                text = decoded_bytes.decode('utf-8', errors='ignore')
+                logger.debug("Decoded quoted-printable encoding in email")
+
+            # Decode HTML entities (&nbsp;, &amp;, &lt;, etc.)
+            if '&' in text:
+                text = html.unescape(text)
+                logger.debug("Decoded HTML entities in email")
+
+            # Remove soft line breaks (=\n)
+            text = re.sub(r'=\s*\n', '', text)
+
+            # Collapse multiple spaces/tabs into single space
+            text = re.sub(r'[ \t]+', ' ', text)
+
+            # Collapse multiple newlines (keep max 2)
+            text = re.sub(r'\n{3,}', '\n\n', text)
+
+            # Strip leading/trailing whitespace from each line
+            lines = [line.strip() for line in text.split('\n')]
+            text = '\n'.join(lines)
+
+            return text
+
+        except Exception as e:
+            logger.warning(f"Error cleaning email text: {e}")
+            return text  # Return original if cleaning fails
+
     def extract(self, email_data):
         """Extract receipt data from email"""
         try:
             logger.info(f"Extracting data from: {email_data.get('subject')}")
-            
+
+            # Clean email body for better LLM parsing
+            raw_body = email_data.get('body', '')
+            cleaned_body = self._clean_email_text(raw_body)
+
+            # Handle PDF attachments
+            pdf_text = email_data.get('pdf_text')
+            if 'pdf_data' in email_data and not pdf_text:
+                # PDF exists but extraction failed - treat as manual review
+                logger.error("PDF attachment found but text extraction failed - marking for manual review")
+                return None
+
+            # Combine email body with PDF text if available
+            # IMPORTANT: Prioritize PDF content if available (it's more reliable than HTML)
+            full_content = cleaned_body
+            if pdf_text:
+                logger.info("Using PDF text for extraction (prioritized over email body)")
+                # Put PDF first so it doesn't get truncated
+                full_content = f"--- PDF Receipt Content ---\n{pdf_text}\n\n--- Email Body ---\n{cleaned_body[:3000]}"
+
             # Prepare the prompt
             system_prompt = self.config.get('system_prompt', '')
             extraction_prompt = self.config.get('extraction_prompt', '')
-            
+
             # Combine email content
             email_content = f"""
 Subject: {email_data.get('subject')}
@@ -53,9 +128,9 @@ From: {email_data.get('from')}
 Date: {email_data.get('date')}
 
 Email Body:
-{email_data.get('body', '')[:4000]}
-"""  # Limit email body length to avoid context overflow
-            
+{full_content[:8000]}
+"""  # Truncate at 8000 chars (PDF is now at the beginning)
+
             # Generate response using MLX
             response = self._generate_response(system_prompt, extraction_prompt, email_content)
             
@@ -69,6 +144,9 @@ Email Body:
             if receipt_data:
                 # Validate and adjust confidence based on price consistency
                 receipt_data = self._validate_and_adjust_confidence(receipt_data)
+
+                # Detect potential hallucinations and adjust confidence
+                # receipt_data = self._detect_hallucinations(receipt_data, email_data)
 
                 logger.info(f"Extracted {len(receipt_data.get('items', []))} items "
                           f"with confidence {receipt_data.get('confidence', 0):.2f}")
@@ -273,4 +351,100 @@ Email Body:
 
         data['confidence'] = adjusted_confidence
         data['_confidence_reasons'] = confidence_reasons  # Hidden field for debugging
+        return data
+
+    def _detect_hallucinations(self, data, email_data):
+        """
+        Detect potential AI hallucinations and adjust confidence accordingly.
+
+        Hallucination indicators:
+        - Generic product names without manufacturer/model details
+        - Products marked as "N/A", "Not available", etc.
+        - Electronics from cafe/restaurant merchants
+        - Very generic descriptions
+        """
+        confidence = data.get('confidence', 0.8)
+        confidence_reasons = data.get('_confidence_reasons', [])
+
+        # Known cafe/restaurant/bar keywords in merchant names
+        food_merchant_keywords = [
+            'cafe', 'coffee', 'restaurant', 'bar', 'bistro', 'kitchen',
+            'grill', 'deli', 'bakery', 'burger', 'pizza', 'taco', 'burrito',
+            'wine', 'brewery', 'pub', 'lounge', 'station llc', 'via square'
+        ]
+
+        # Generic product names that are often hallucinated
+        generic_product_names = [
+            'wireless earbuds', 'smartwatch', 'laptop', 'tablet', 'headphones',
+            'charger', 'phone case', 'speaker', 'keyboard', 'mouse'
+        ]
+
+        # Check if merchant is likely a food establishment
+        store_name = data.get('store', '').lower()
+        is_food_merchant = any(keyword in store_name for keyword in food_merchant_keywords)
+
+        hallucination_score = 0
+        hallucination_indicators = []
+
+        for item in data.get('items', []):
+            item_name = item.get('name', '').lower()
+            category = item.get('category', '').lower()
+            manufacturer = str(item.get('manufacturer', '')).strip()
+            model_number = str(item.get('model_number', '')).strip()
+            description = item.get('description', '').lower()
+
+            # Check 1: Generic product name
+            if any(generic_name in item_name for generic_name in generic_product_names):
+                hallucination_score += 0.3
+                hallucination_indicators.append(
+                    f"Generic product name detected: '{item.get('name')}'"
+                )
+
+            # Check 2: Missing manufacturer/model with "N/A" or "Not available"
+            na_values = ['n/a', 'not available', 'unknown', 'none', '']
+            if (manufacturer.lower() in na_values and model_number.lower() in na_values):
+                hallucination_score += 0.2
+                hallucination_indicators.append(
+                    f"No manufacturer/model details for '{item.get('name')}'"
+                )
+
+            # Check 3: Electronics from food merchant
+            if is_food_merchant and category == 'electronics':
+                hallucination_score += 0.4
+                hallucination_indicators.append(
+                    f"Electronics category '{item.get('name')}' from food merchant '{data.get('store')}'"
+                )
+
+            # Check 4: Very generic descriptions
+            generic_descriptions = [
+                'wireless earbuds with bluetooth connectivity',
+                'smartwatch with fitness tracking',
+                'laptop computer',
+                'wireless headphones with bluetooth'
+            ]
+            if any(generic_desc in description for generic_desc in generic_descriptions):
+                hallucination_score += 0.2
+                hallucination_indicators.append(
+                    f"Generic description for '{item.get('name')}'"
+                )
+
+        # Adjust confidence based on hallucination score
+        if hallucination_score > 0:
+            # Reduce confidence significantly for suspected hallucinations
+            penalty = min(0.5, hallucination_score)
+            original_confidence = confidence
+            confidence = max(0.3, confidence - penalty)
+
+            reason = (
+                f"Potential hallucination detected (score: {hallucination_score:.2f}). "
+                f"Confidence reduced from {original_confidence:.2f} to {confidence:.2f}. "
+                f"Indicators: {'; '.join(hallucination_indicators)}"
+            )
+            confidence_reasons.append(reason)
+            logger.warning(reason)
+
+        data['confidence'] = confidence
+        data['_confidence_reasons'] = confidence_reasons
+        data['_hallucination_score'] = hallucination_score
+        data['_hallucination_indicators'] = hallucination_indicators
         return data

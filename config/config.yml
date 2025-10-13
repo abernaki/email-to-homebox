@@ -25,14 +25,17 @@ email:
     - ebay.com
   
   # Processing options
-  move_to_folder_on_success: "Receipts/Receipts (in Homebox)"
-  move_to_folder_on_low_confidence: "Receipts/Receipts (process manually)"
+  move_to_folder_on_success: "Receipts/Homebox"
+  move_to_folder_on_low_confidence: "Receipts/Manual Review"
+  move_to_folder_on_consumable: "Receipts/Consumables"
 
 # AI extraction configuration
 ai:
   system_prompt: |
     You are a receipt data extraction assistant. Extract purchase information from receipt emails.
-    Only extract information you are confident about. Return valid JSON only.
+    Only extract information you are confident about. Never invent or guess product names.
+    If product details are not explicitly stated in the receipt, return an empty items array.
+    Return valid JSON only.
   
   extraction_prompt: |
     Extract purchase information from this receipt email and return ONLY a JSON object with this structure:
@@ -58,16 +61,24 @@ ai:
       "confidence": 0.95
     }
 
-    Categories should be one of: electronics, clothing, food, home, books, health, automotive, sports, toys, other.
-    You can shorten product names but keep them descriptive. Use functionality details from the product name in the description.
+    CRITICAL INSTRUCTIONS:
+    - ONLY extract product names that are EXPLICITLY stated in the receipt
+    - If the receipt does not list specific product names or line items, return an EMPTY items array []
+    - DO NOT guess, invent, or make up product names based on the store name or context
+    - Look for sections like "Items", "Order Details", "Products", or line-by-line item listings
+    - If you only see "You paid $X to Store Name" with no item details, return empty items: []
+    - If you're unsure what was purchased, return empty items rather than guessing
+
+    Categories should be one of: electronics, clothing, food, subscriptions, software, home, books, health, automotive, sports, toys, other.
+    You can shorten product names but keep them descriptive and specific. Use functionality details from the product name in the description.
 
     For the confidence field (0.0 to 1.0), rate how confident you are in the extraction:
     - 0.9-1.0: Clear, well-formatted receipt with all information present
     - 0.7-0.9: Most information present but some fields unclear or missing
     - 0.5-0.7: Partial information, significant uncertainty
-    - Below 0.5: Very uncertain, possibly not a receipt
+    - Below 0.5: Very uncertain, possibly not a receipt, or no line items found
 
-    Total price should include sales tax if shown on the receipt.
+    Total price for each item should not include sales tax.
 
     Return ONLY the JSON, no other text.
 
@@ -111,6 +122,65 @@ processing:
   image_search_delay: 2.5               # Seconds to wait between searches (rate limit protection)
   max_image_searches_per_receipt: 3     # Max DuckDuckGo searches per receipt
   image_search_min_price: 0.0           # Only search for items above this price (0 = search all)
+
+  # Label settings for AI-populated images
+  label_ai_images: true                 # Add label to items with AI-populated images (both email and DuckDuckGo)
+  ai_image_label_name: "Verify Image"   # Name of the label to add for manual review
+
+  # Consumable filtering - skip receipts for food/cleaning supplies
+  skip_consumables: true                # Enable consumable filtering
+  consumable_categories:                # Categories to consider consumable
+    - food                              # Food, groceries, snacks
+    - health                            # Uncomment to also skip medicine, toiletries, vitamins
+    - software
+    - subscriptions
+  # Note: Receipts are skipped only if ALL items are consumable
+  # Mixed receipts (e.g., TV + snacks) will still be processed
+
+  # Non-physical item filtering - skip individual items that are digital/subscriptions
+  skip_non_physical: true               # Enable filtering of non-physical items
+  non_physical_categories:              # Categories to filter out
+    - subscriptions
+    - software
+  non_physical_keywords:                # Keywords that indicate non-physical items
+    - membership
+    - subscription
+    - digital
+    - license
+    - plan
+    - warranty
+    - extended protection
+    - insurance
+    - service plan
+    - monthly
+    - yearly
+    - annual
+    - renewal
+    - ticket
+    - tickets
+    - event
+    - concert
+    - show
+    - admission
+    - reservation
+    - restaurant
+    - dining
+    - hotel
+    - accommodation
+    - stay
+    - booking
+    - room
+    - lodge
+    - flight
+    - airfare
+    - airline
+    - travel
+    - train
+    - bus
+    - rental car
+    - car rental
+  # Note: This filters individual items, not entire receipts
+  # If a receipt has physical + non-physical items, only physical items are added
 
 # Image backfill settings (for backfill_images.py script)
 backfill:
