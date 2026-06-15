@@ -94,6 +94,19 @@ def process_receipt(email_data, extractor, homebox, config):
             save_failed_receipt(email_data, "extraction_failed")
             return {'status': 'failed', 'reason': 'extraction_failed'}
 
+        # Check if manual review is needed (e.g., PDF extraction failed)
+        if receipt_data.get('_manual_review'):
+            reason = receipt_data.get('_reason', 'unknown')
+            logger.warning(f"Manual review required: {reason}")
+            save_failed_receipt(email_data, "manual_review", receipt_data)
+            return {'status': 'failed', 'reason': 'manual_review', 'details': reason}
+
+        # Check if LLM returned no items (e.g., Square receipts with no line items)
+        if receipt_data.get('_no_items_found'):
+            logger.info(f"Receipt has no line items (store: {receipt_data.get('store')}, total: {receipt_data.get('total')})")
+            save_processed_receipt(email_data, receipt_data)  # Save for reference
+            return {'status': 'no_items', 'store': receipt_data.get('store'), 'total': receipt_data.get('total')}
+
         # Check confidence level
         confidence = receipt_data.get('confidence', 0)
         min_confidence = config['processing']['min_confidence']
@@ -510,6 +523,70 @@ def add_pdf_cross_references(created_items, first_item_id, homebox):
             logger.error(f"Error adding cross-reference to {item_name}: {e}")
 
 
+def handle_receipt_result(result, email_data, email_fetcher, config):
+    """
+    Handle receipt processing result by moving email to appropriate folder
+
+    Args:
+        result: Dict with 'status' and other result data from process_receipt()
+        email_data: Email data dict with 'uid', 'subject', etc.
+        email_fetcher: EmailFetcher instance for moving emails
+        config: Application config
+
+    Returns:
+        dict: Summary with 'moved_to' folder name if moved, or None
+    """
+    status = result.get('status')
+
+    if status == 'success':
+        # Move to success folder if configured
+        move_folder = config['email'].get('move_to_folder_on_success')
+        if move_folder:
+            email_fetcher.move_to_folder(email_data['uid'], move_folder)
+            logger.info(f"✓ Moved to '{move_folder}'")
+            return {'moved_to': move_folder}
+        else:
+            logger.info(f"✓ Successfully processed")
+            return {}
+
+    elif status == 'low_confidence':
+        # Move to manual processing folder
+        manual_folder = config['email'].get('move_to_folder_on_low_confidence', 'Receipts/Manual Review')
+        if manual_folder:
+            email_fetcher.move_to_folder(email_data['uid'], manual_folder)
+            logger.info(f"⚠ Low confidence - moved to '{manual_folder}'")
+            return {'moved_to': manual_folder}
+        else:
+            logger.info(f"⚠ Low confidence")
+            return {}
+
+    elif status == 'consumable':
+        # Move to consumables folder
+        consumable_folder = config['email'].get('move_to_folder_on_consumable', 'Receipts/Consumables')
+        if consumable_folder:
+            email_fetcher.move_to_folder(email_data['uid'], consumable_folder)
+            logger.info(f"⊝ Consumable items - moved to '{consumable_folder}'")
+            return {'moved_to': consumable_folder}
+        else:
+            logger.info(f"⊝ Consumable items - skipped")
+            return {}
+
+    elif status == 'no_items':
+        # Move to no items folder
+        no_items_folder = config['email'].get('move_to_folder_on_no_items', 'Receipts/No Items')
+        if no_items_folder:
+            email_fetcher.move_to_folder(email_data['uid'], no_items_folder)
+            logger.info(f"○ No line items found - moved to '{no_items_folder}'")
+            return {'moved_to': no_items_folder}
+        else:
+            logger.info(f"○ No line items found")
+            return {}
+
+    else:  # failed or unknown status
+        logger.error(f"✗ Failed to process (reason: {result.get('reason', 'unknown')})")
+        return {}
+
+
 def save_failed_receipt(email_data, reason, extracted_data=None):
     """Save failed receipt for manual review"""
     failed_dir = Path('data/failed')
@@ -558,7 +635,7 @@ def save_processed_receipt(email_data, receipt_data):
 def main():
     """Main application loop"""
     logger.info("=" * 60)
-    logger.info("Receipt Processor Starting (MLX-powered)")
+    logger.info("Receipt Processor Starting (Ollama-powered)")
     logger.info("=" * 60)
     
     # Create data directories
@@ -573,12 +650,12 @@ def main():
     
     try:
         extractor = ReceiptExtractor(config['ai'])
-        logger.info("✓ MLX Receipt Extractor initialized")
+        logger.info("✓ Ollama Receipt Extractor initialized")
     except Exception as e:
-        logger.error(f"Failed to initialize MLX: {e}")
+        logger.error(f"Failed to initialize Ollama extractor: {e}")
         sys.exit(1)
     
-    email_fetcher = EmailFetcher(config['email'])
+    email_fetcher = EmailFetcher(config['email'], config.get('processing', {}))
     logger.info("✓ Email Fetcher initialized")
     
     homebox = HomeboxClient()
@@ -605,25 +682,8 @@ def main():
                 
                 for email_data in emails:
                     result = process_receipt(email_data, extractor, homebox, config)
-
-                    # Handle result based on status
-                    if result['status'] == 'success':
-                        # Move to success folder if configured
-                        move_folder = config['email'].get('move_to_folder_on_success')
-                        if move_folder:
-                            email_fetcher.move_to_folder(email_data['uid'], move_folder)
-                    elif result['status'] == 'low_confidence':
-                        # Move to manual processing folder
-                        manual_folder = config['email'].get('move_to_folder_on_low_confidence', 'Receipts (process manually)')
-                        if manual_folder:
-                            logger.info(f"Moving low confidence email to '{manual_folder}'")
-                            email_fetcher.move_to_folder(email_data['uid'], manual_folder)
-                    elif result['status'] == 'consumable':
-                        # Move to consumables folder
-                        consumable_folder = config['email'].get('move_to_folder_on_consumable', 'Receipts/Consumables')
-                        if consumable_folder:
-                            logger.info(f"Moving consumable email to '{consumable_folder}'")
-                            email_fetcher.move_to_folder(email_data['uid'], consumable_folder)
+                    # Handle result and move email to appropriate folder
+                    handle_receipt_result(result, email_data, email_fetcher, config)
             else:
                 logger.debug("No new receipts found")
             

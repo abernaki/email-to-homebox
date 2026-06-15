@@ -19,7 +19,7 @@ from receipt_extractor_mlx import ReceiptExtractor
 
 # Setup logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # Changed to DEBUG to see more details
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ def test_email_and_extraction():
     # Initialize email fetcher
     logger.info("\nInitializing email fetcher...")
     try:
-        email_fetcher = EmailFetcher(config['email'])
+        email_fetcher = EmailFetcher(config['email'], config.get('processing', {}))
         logger.info("✓ Email fetcher initialized\n")
     except Exception as e:
         logger.error(f"Failed to initialize email fetcher: {e}")
@@ -91,7 +91,18 @@ def test_email_and_extraction():
             logger.info(f"Subject: {email_data.get('subject', 'N/A')}")
             logger.info(f"From: {email_data.get('from', 'N/A')}")
             logger.info(f"Date: {email_data.get('date', 'N/A')}")
+            logger.info(f"Images: {len(email_data.get('images', []))} found")
+            logger.info(f"Body length: {len(email_data.get('body', ''))} chars")
             logger.info("")
+
+            # Show first 500 chars of body for debugging
+            body_preview = email_data.get('body', '')[:500]
+            if body_preview:
+                logger.info("Body preview (first 500 chars):")
+                logger.info("-" * 60)
+                logger.info(body_preview)
+                logger.info("-" * 60)
+                logger.info("")
 
             # Extract data
             logger.info("Extracting receipt data...")

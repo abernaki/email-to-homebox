@@ -43,7 +43,7 @@ def main():
     config = load_config()
 
     # Initialize email fetcher
-    email_fetcher = EmailFetcher(config['email'])
+    email_fetcher = EmailFetcher(config['email'], config.get('processing', {}))
     logger.info("✓ Email Fetcher initialized")
 
     # Fetch emails (not just unread)

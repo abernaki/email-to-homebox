@@ -2,7 +2,8 @@
 email:
   # Folders to monitor
   folders:
-    - Receipts
+    - Receipts  # For testing - change back to "Receipts" for production
+    # - Receipts  # Production folder
   
   # Email subject patterns that indicate receipts
   subject_patterns:
@@ -28,6 +29,7 @@ email:
   move_to_folder_on_success: "Receipts/Homebox"
   move_to_folder_on_low_confidence: "Receipts/Manual Review"
   move_to_folder_on_consumable: "Receipts/Consumables"
+  move_to_folder_on_no_items: "Receipts/No Items"  # Square "Custom Amount" receipts, etc.
 
 # AI extraction configuration
 ai:
@@ -65,12 +67,28 @@ ai:
     - ONLY extract product names that are EXPLICITLY stated in the receipt
     - If the receipt does not list specific product names or line items, return an EMPTY items array []
     - DO NOT guess, invent, or make up product names based on the store name or context
-    - Look for sections like "Items", "Order Details", "Products", or line-by-line item listings
+    - Look for sections like "Items", "Order Details", "Products", "Details", "Your pledge", or line-by-line item listings
     - If you only see "You paid $X to Store Name" with no item details, return empty items: []
     - If you're unsure what was purchased, return empty items rather than guessing
+    - IMPORTANT: A $0.00 total does NOT mean there are no items - extract items even if "Free" or fully discounted
+    - If you see "Original Price" or "Was Price", use that as the item price (not the discounted or free price)
+    - Extract the item even if "Final Price: Free" - use the Original Price field
+    - If you see malformed text (e.g., "Item Nameנ1" or "Item Name×1"), extract "Item Name" as the product
+    - Look for prices even when formatting is poor - a line item exists if you can find a product name and price
+    - A 100% discount code/coupon does not mean the item doesn't exist - still extract it with its original price
+    - Product names and prices may be separated by links, whitespace, or other content - still extract them as items
+    - For Kickstarter/crowdfunding: look for "Your pledge", "Details", reward tiers - these ARE products
+    - Items preceded by "+" (like "+ Add-on item") are still line items - extract them
+    - Shipping costs should NOT be extracted as items (skip "Shipping", "Delivery", "Handling")
 
     Categories should be one of: electronics, clothing, food, subscriptions, software, home, books, health, automotive, sports, toys, other.
     You can shorten product names but keep them descriptive and specific. Use functionality details from the product name in the description.
+
+    IMPORTANT: Always include SIZE and COLOR information in the description when available:
+    - Clothing/shoes: sizes like "Size 11.5", "Medium", "XL", "38R", etc.
+    - Electronics: dimensions like "65 inch", "2M", "15.6 inch display", storage capacity like "1TB", etc.
+    - Home items: dimensions, capacity like "2-quart", "king size", etc.
+    - Any other size/measurement details that help identify the specific product variant
 
     For the confidence field (0.0 to 1.0), rate how confident you are in the extraction:
     - 0.9-1.0: Clear, well-formatted receipt with all information present
@@ -116,6 +134,12 @@ processing:
 
   # Save all processed receipts
   save_processed: true
+
+  # OCR settings for physical receipt photos
+  enable_ocr: true                      # Use EasyOCR to extract text from receipt images
+  ocr_min_body_length: 200              # Run OCR if email body is shorter than this (chars)
+  # Note: OCR runs automatically when email has minimal text and attached images
+  # Useful for physical receipt photos emailed to yourself
 
   # Image search settings
   enable_image_search: true             # Use DuckDuckGo fallback when no email images

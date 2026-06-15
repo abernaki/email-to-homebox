@@ -16,21 +16,25 @@ sys.path.insert(0, 'src')
 from email_fetcher import EmailFetcher
 from receipt_extractor_mlx import ReceiptExtractor
 from homebox_client import HomeboxClient
-from app import process_receipt, load_config
+from app import process_receipt, load_config, handle_receipt_result
 
-# Setup logging
+# Load environment first (before logging setup)
+load_dotenv()
+
+# Setup logging - use LOG_LEVEL from .env
+log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=getattr(logging, log_level, logging.INFO),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Set all loggers to DEBUG
-logging.getLogger('homebox_client').setLevel(logging.DEBUG)
-logging.getLogger('app').setLevel(logging.DEBUG)
-
-# Load environment
-load_dotenv()
+# Set all loggers to the same level
+level = getattr(logging, log_level, logging.INFO)
+logging.getLogger('homebox_client').setLevel(level)
+logging.getLogger('app').setLevel(level)
+logging.getLogger('email_fetcher').setLevel(level)
+logging.getLogger('receipt_extractor_mlx').setLevel(level)
 
 
 def main():
@@ -47,12 +51,12 @@ def main():
 
     try:
         extractor = ReceiptExtractor(config['ai'])
-        logger.info("✓ MLX Receipt Extractor initialized")
+        logger.info("✓ Ollama Receipt Extractor initialized")
     except Exception as e:
-        logger.error(f"Failed to initialize MLX: {e}")
+        logger.error(f"Failed to initialize Ollama extractor: {e}")
         sys.exit(1)
 
-    email_fetcher = EmailFetcher(config['email'])
+    email_fetcher = EmailFetcher(config['email'], config.get('processing', {}))
     logger.info("✓ Email Fetcher initialized")
 
     homebox = HomeboxClient()
@@ -77,6 +81,7 @@ def main():
     success_count = 0
     low_conf_count = 0
     consumable_count = 0
+    no_items_count = 0
     failed_count = 0
 
     for i, email_data in enumerate(emails, 1):
@@ -84,37 +89,22 @@ def main():
 
         result = process_receipt(email_data, extractor, homebox, config)
 
-        # Handle result based on status
-        if result['status'] == 'success':
+        # Update counters based on status
+        status = result['status']
+        if status == 'success':
             success_count += 1
-            # Move to success folder if configured
-            move_folder = config['email'].get('move_to_folder_on_success')
-            if move_folder:
-                # email_fetcher.move_to_folder(email_data['uid'], move_folder)
-                logger.info(f"✓ Moved to '{move_folder}'\n")
-            else:
-                logger.info(f"✓ Successfully processed\n")
-        elif result['status'] == 'low_confidence':
+        elif status == 'low_confidence':
             low_conf_count += 1
-            # Move to manual processing folder
-            manual_folder = config['email'].get('move_to_folder_on_low_confidence', 'Receipts (process manually)')
-            if manual_folder:
-                email_fetcher.move_to_folder(email_data['uid'], manual_folder)
-                logger.info(f"⚠ Low confidence - moved to '{manual_folder}'\n")
-            else:
-                logger.info(f"⚠ Low confidence\n")
-        elif result['status'] == 'consumable':
+        elif status == 'consumable':
             consumable_count += 1
-            # Move to consumables folder
-            consumable_folder = config['email'].get('move_to_folder_on_consumable', 'Receipts/Consumables')
-            if consumable_folder:
-                email_fetcher.move_to_folder(email_data['uid'], consumable_folder)
-                logger.info(f"⊝ Consumable items - moved to '{consumable_folder}'\n")
-            else:
-                logger.info(f"⊝ Consumable items - skipped\n")
+        elif status == 'no_items':
+            no_items_count += 1
         else:
             failed_count += 1
-            logger.error(f"✗ Failed to process\n")
+
+        # Handle result (move email to appropriate folder)
+        handle_receipt_result(result, email_data, email_fetcher, config)
+        logger.info("")  # Add blank line for readability
 
     # Summary
     logger.info("=" * 60)
@@ -123,6 +113,7 @@ def main():
     logger.info(f"Successfully processed: {success_count}")
     logger.info(f"Low confidence (manual): {low_conf_count}")
     logger.info(f"Consumables (skipped): {consumable_count}")
+    logger.info(f"No items found: {no_items_count}")
     logger.info(f"Failed: {failed_count}")
     logger.info(f"Total: {len(emails)}")
 

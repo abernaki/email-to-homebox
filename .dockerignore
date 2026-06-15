@@ -1,0 +1,12 @@
+venv/
+.git/
+data/
+__pycache__/
+*.pyc
+*.pyo
+.env
+tests/
+test_*.py
+*.md
+pytest.ini
+run_tests.sh

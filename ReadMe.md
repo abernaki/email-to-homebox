@@ -7,6 +7,11 @@ Automatically extract purchase data from email receipts using local AI (MLX on A
 - 🤖 **Local AI processing** using MLX-LM (Qwen2.5-7B-Instruct-4bit, optimized for Apple Silicon)
 - 📧 **Email integration** via IMAP - works with Gmail, Outlook, iCloud, Fastmail, and any IMAP provider
 - 🏠 **Homebox API integration** - automatically creates inventory items with purchase info
+- 📸 **OCR for physical receipts** - extract text from receipt photos using EasyOCR
+  - Take a photo of a physical receipt with your phone
+  - Email it to yourself as an attachment
+  - System automatically extracts text using OCR
+  - GPU-accelerated on Apple Silicon
 - 🖼️ **Product image extraction** - finds and uploads product photos from emails
   - Extracts images from email attachments
   - Downloads linked images from HTML emails
@@ -313,6 +318,29 @@ python run_once.py
 
 Processes all emails in "Receipts" folder once and exits. Successfully processed receipts are moved to subfolder for organization.
 
+### Processing Physical Receipts
+
+To process physical receipts (paper receipts from stores):
+
+1. **Take a photo** of the receipt with your phone (make sure text is clear and readable)
+2. **Email the photo to yourself** as an attachment
+3. **Move the email** to your "Receipts" folder
+4. **Run the processor**: `python run_once.py`
+
+The system will automatically:
+- Detect that the email has minimal text and an image attachment
+- Run OCR (Optical Character Recognition) to extract text from the receipt photo
+- Process the OCR'd text just like a regular email receipt
+- Extract items and add them to Homebox
+
+**Tips for best OCR results:**
+- Take photos in good lighting
+- Keep the receipt flat and in focus
+- Make sure all text is visible and not cut off
+- Higher resolution photos work better
+
+**Note:** OCR is GPU-accelerated on Apple Silicon, so it's fast! First run will download OCR models (~100MB).
+
 ### Future: Daemon Mode
 
 ```bash
@@ -365,6 +393,25 @@ python -c "from mlx_lm import load; load('mlx-community/Qwen2.5-7B-Instruct-4bit
 **Problem:** Out of memory
 - Need 8GB+ RAM for 7B model
 - Model uses ~5GB, system needs headroom
+
+### OCR Issues
+
+**Problem:** OCR not extracting text from physical receipt photos
+- Make sure photo is clear, in focus, and well-lit
+- Check that `enable_ocr: true` in `config/config.yml`
+- Try with a higher resolution photo
+- Check logs to see if OCR is running
+
+**Problem:** EasyOCR initialization fails
+```bash
+# Manually test EasyOCR
+python -c "import easyocr; reader = easyocr.Reader(['en'], gpu=True)"
+```
+
+**Problem:** OCR is slow
+- First run downloads OCR models (~100MB)
+- Subsequent runs should be fast with GPU acceleration
+- Check that `gpu=True` is working (logs will show initialization)
 
 ## Running Automatically
 
@@ -447,6 +494,11 @@ python run_once.py        # Process receipts
   - Configurable categories (food, health, etc.)
   - Only skips if ALL items are consumable - mixed receipts still processed
   - Moves consumable receipts to separate folder for organization
+- 📸 **OCR for physical receipts** (2025-10-13)
+  - Extract text from receipt photos using EasyOCR
+  - GPU-accelerated on Apple Silicon
+  - Automatically processes physical receipt photos emailed to yourself
+  - Smart detection: runs OCR when email body is minimal
 
 ### Planned Features
 - 📄 **Email PDF attachment** - Save original receipt email as PDF attachment

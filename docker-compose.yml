@@ -1,0 +1,11 @@
+services:
+  email-to-homebox:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    # Allows the container to reach Ollama running on the Mac host
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data

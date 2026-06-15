@@ -15,9 +15,10 @@ This system automatically processes receipt emails, extracts purchase data using
 - ✅ Automatic email organization (moves to success/manual subfolders)
 - ✅ One-time batch processing script (`run_once.py`)
 - ✅ Test scripts for debugging
-- ✅ **NEW:** Product image extraction from emails (attachments + linked images)
-- ✅ **NEW:** DuckDuckGo image search fallback
-- ✅ **NEW:** Automatic image upload to Homebox items
+- ✅ Product image extraction from emails (attachments + linked images)
+- ✅ DuckDuckGo image search fallback
+- ✅ Automatic image upload to Homebox items
+- ✅ **NEW:** OCR for physical receipt photos using EasyOCR
 
 ### Known Issues
 - Main daemon app (`src/app.py`) exists but `run_once.py` is recommended for manual runs
@@ -27,14 +28,19 @@ This system automatically processes receipt emails, extracts purchase data using
 ### Components
 
 #### 1. Email Fetcher (`src/email_fetcher.py`)
-- Connects to Gmail via IMAP
+- Connects to email via IMAP (any provider)
 - Fetches emails from configured folders
 - Can filter by read/unread status
 - Supports moving emails between folders
+- Extracts images from emails (attachments + HTML links)
+- **OCR extraction** for physical receipt photos
 
 **Key Methods:**
 - `fetch_receipts(unread_only=True)` - Get receipt emails
 - `move_to_folder(uid, destination_folder, source_folder='Receipts')` - Move emails
+- `_extract_images(email_message)` - Extract images from email
+- `_extract_text_from_images(images)` - OCR text extraction from images
+- `_get_ocr_reader()` - Lazy-load EasyOCR reader (GPU-accelerated)
 
 #### 2. Receipt Extractor (`src/receipt_extractor_mlx.py`)
 - Uses MLX-LM for Apple Silicon GPU acceleration
@@ -137,15 +143,28 @@ MIN_CONFIDENCE=0.7
 
 ```
 Email (IMAP) → Email Fetcher → Receipt Extractor (MLX) → Validation
-                     ↓                                       ↓
-                Extract Images                    Homebox Client ← App Logic
-                (attachments +                              ↓
-                 HTML links)                      Homebox API (two-step create)
-                     ↓                                       ↓
-                Match to Items                    Upload Images → Homebox API
-                     ↓                                       ↑
-             No images? ────────→ DuckDuckGo Search ────────┘
+       ↓            ↓                                       ↓
+   Has text?   Extract Images                   Homebox Client ← App Logic
+       ↓        (attachments +                             ↓
+    Minimal     HTML links)                     Homebox API (two-step create)
+       ↓            ↓                                       ↓
+    OCR Text ← Has Images?                      Upload Images → Homebox API
+       ↓                                                    ↑
+   Append to body                                          │
+       ↓                                                    │
+   Match images to items                                   │
+       ↓                                                    │
+   No images? ────────→ DuckDuckGo Search ────────────────┘
 ```
+
+**OCR Handling Flow:**
+1. Email Fetcher extracts body text from email (plain text or HTML)
+2. If body text is minimal (<200 chars) and images are present:
+   - Initialize EasyOCR reader (GPU-accelerated, lazy-loaded)
+   - Run OCR on each image attachment
+   - Extract text from receipt photo
+   - Append/prepend OCR'd text to email body
+3. Continue with normal processing (AI extraction, validation, etc.)
 
 **Image Handling Flow:**
 1. Email Fetcher extracts images from email (both attachments and HTML `<img>` tags)
@@ -308,6 +327,21 @@ Homebox API has limited fields on create endpoint:
   - DuckDuckGo fallback if no email images
 - `config/config.yml` - Added `enable_image_search` setting
 - New dependencies: `Pillow>=10.0.0`, `duckduckgo-search>=5.0.0`
+
+**Recently Completed (2025-10-13):**
+
+✅ **OCR for physical receipt photos** - COMPLETE
+- `src/email_fetcher.py` - Added OCR functionality
+  - `_get_ocr_reader()` - Lazy-loads EasyOCR reader (GPU-accelerated)
+  - `_extract_text_from_images()` - Extracts text from image attachments using OCR
+  - Modified `_fetch_email()` to automatically run OCR when email body is minimal
+  - Smart detection: runs OCR if body < 200 chars and images present
+- `config/config.yml` - Added OCR settings
+  - `enable_ocr: true` - Toggle OCR on/off
+  - `ocr_min_body_length: 200` - Threshold for running OCR
+- `requirements.txt` - Added `easyocr>=1.7.0`
+- Use case: Take photo of physical receipt, email to yourself, system automatically extracts text
+- GPU-accelerated on Apple Silicon for fast processing
 
 **Next Session - Start Here:**
 
