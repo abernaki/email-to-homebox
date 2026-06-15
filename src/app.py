@@ -675,7 +675,7 @@ def main():
         try:
             # Fetch unprocessed receipt emails
             logger.debug("Checking for new receipts...")
-            emails = email_fetcher.fetch_receipts()
+            emails = email_fetcher.fetch_receipts(unread_only=False)
             
             if emails:
                 logger.info(f"Found {len(emails)} receipt email(s)")
