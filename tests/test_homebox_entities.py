@@ -90,8 +90,6 @@ class HomeboxEntitiesContractTests(unittest.TestCase):
                 'description': 'Mirrorless camera',
                 'quantity': 1,
                 'tagIds': ['tag-1'],
-                'modelNumber': 'C-1',
-                'manufacturer': 'Example',
             },
             timeout=30,
         )
@@ -146,6 +144,40 @@ class HomeboxEntitiesContractTests(unittest.TestCase):
         self.assertEqual(raised.exception.entity_id, 'entity-partial')
         post.assert_called_once()
         put.assert_called_once()
+
+    @patch.object(homebox_client.requests, 'put')
+    @patch.object(homebox_client.requests, 'post')
+    def test_manufacturer_and_model_only_are_applied_by_entity_update(self, post, put):
+        created = {
+            'id': 'entity-metadata',
+            'name': 'Camera',
+            'description': '',
+            'quantity': 1,
+            'parent': {'id': 'location-1'},
+            'entityType': {'id': 'item-type'},
+            'tags': [],
+            'fields': [],
+            'manufacturer': '',
+            'modelNumber': '',
+        }
+        updated = dict(created, manufacturer='Example', modelNumber='C-1')
+        post.return_value = response(201, created)
+        put.return_value = response(200, updated)
+
+        result = self.client.create_item({
+            'name': 'Camera',
+            'locationId': 'location-1',
+            'manufacturer': 'Example',
+            'modelNumber': 'C-1',
+        })
+
+        self.assertEqual(result, updated)
+        post_payload = post.call_args.kwargs['json']
+        self.assertNotIn('manufacturer', post_payload)
+        self.assertNotIn('modelNumber', post_payload)
+        update_payload = put.call_args.kwargs['json']
+        self.assertEqual(update_payload['manufacturer'], 'Example')
+        self.assertEqual(update_payload['modelNumber'], 'C-1')
 
     @patch.object(homebox_client.requests, 'get')
     def test_locations_use_paginated_entity_query(self, get):

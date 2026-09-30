@@ -146,6 +146,8 @@ The preview prints extracted receipt data and mapped Homebox payloads to stdout.
 
 The Compose service explicitly runs the live daemon. Before starting it, configure `.env` with `EMAIL_ADDRESS`, `EMAIL_PASSWORD`, `HOMEBOX_URL`, `HOMEBOX_API_KEY`, and a container-reachable `OLLAMA_HOST`; `AI_MODEL` must name an already-installed Ollama model. Homebox API keys inherit the owning user's full access and have no per-key endpoint scope, so use a dedicated service account. Never mint keys from the app or place credentials in the image/source/plaintext manifests.
 
+The Dockerfile default command intentionally omits `--live`, so a standalone `docker run IMAGE` exits at the live opt-in guard without touching IMAP or Homebox. Compose opts in explicitly; after configuration review and approval, use `docker run --env-file .env IMAGE python src/app.py --live` for a standalone live daemon.
+
 For a future cluster deployment, inject `EMAIL_ADDRESS`, `EMAIL_PASSWORD`, and `HOMEBOX_API_KEY` from an ESO-managed Secret; keep `HOMEBOX_URL`, `OLLAMA_HOST`, `AI_MODEL`, and processing settings as non-secret configuration. Leave any scheduled one-shot job suspended until an image has been published, endpoint egress reviewed, and a human approves a test; its command is `python run_once.py --live`. `OLLAMA_HOST` must be routable and allowed from within the pod; `localhost` is not the host Ollama service. Container image publication, registry/fork setup, and infrastructure deployment are not performed by this repository task.
 
 ### 4. Live integrations (not part of the safe test)

@@ -22,7 +22,7 @@ docker compose up --build -d
 docker compose logs -f
 ```
 
-The container reaches the host's Ollama via `host.docker.internal:11434`. The `data/` directory is bind-mounted for log/receipt persistence; `config/` is mounted read-only.
+Compose explicitly opts into live processing. The Dockerfile default is intentionally safe and omits `--live`, so `docker run IMAGE` exits without reading IMAP or writing Homebox. For an explicitly approved standalone live run, override it with `docker run --env-file .env IMAGE python src/app.py --live`. The container reaches the host's Ollama via `host.docker.internal:11434`. The `data/` directory is bind-mounted for log/receipt persistence; `config/` is mounted read-only.
 
 ## Tests
 

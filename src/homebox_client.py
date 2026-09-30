@@ -166,9 +166,8 @@ class HomeboxClient:
             'quantity': item_data.get('quantity', 1),
             'tagIds': item_data.get('tagIds', item_data.get('labelIds', [])),
         }
-        for field in ('modelNumber', 'manufacturer', 'entityTypeId'):
-            if field in item_data:
-                create_data[field] = item_data[field]
+        if 'entityTypeId' in item_data:
+            create_data['entityTypeId'] = item_data['entityTypeId']
 
         try:
             response = requests.post(
@@ -200,7 +199,8 @@ class HomeboxClient:
 
             extra_fields = {
                 'purchasePrice', 'purchaseFrom', 'purchaseTime', 'purchaseDate',
-                'serialNumber', 'notes', 'warrantyDetails', 'warrantyExpires',
+                'serialNumber', 'manufacturer', 'modelNumber', 'notes',
+                'warrantyDetails', 'warrantyExpires',
             }
             if extra_fields.intersection(item_data):
                 update_result = self._update_entity(entity_id, item_data, current_entity=result)
