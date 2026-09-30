@@ -1,23 +1,12 @@
 #!/bin/bash
-# Quick setup script for Receipt Processor with MLX
+# Quick setup script for Receipt Processor
 
 set -e
 
 echo "========================================="
-echo "Receipt Processor Setup (MLX)"
+echo "Receipt Processor Setup"
 echo "========================================="
 echo ""
-
-# Check if running on Mac
-if [[ "$OSTYPE" != "darwin"* ]]; then
-    echo "⚠️  Warning: This setup is optimized for macOS with Apple Silicon"
-    echo "   MLX will not work on other platforms."
-    read -p "Continue anyway? (y/n) " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
-    fi
-fi
 
 # Check Python version
 echo "Checking Python version..."
@@ -73,10 +62,14 @@ EMAIL_IMAP_PORT=993
 
 # Homebox Configuration
 HOMEBOX_URL=http://192.168.1.xxx:7745
-HOMEBOX_TOKEN=your-homebox-api-token
+HOMEBOX_API_KEY=your-dedicated-service-account-key
+# Legacy username/password fallback only; prefer a dedicated API key.
+# HOMEBOX_USERNAME=your-homebox-username
+# HOMEBOX_PASSWORD=your-homebox-password
 
-# MLX Model Configuration
-AI_MODEL=mlx-community/Qwen2.5-7B-Instruct-4bit
+# Ollama Model Configuration
+OLLAMA_HOST=http://localhost:11434
+AI_MODEL=qwen2.5:7b
 AI_TEMPERATURE=0.1
 AI_MAX_TOKENS=2048
 
@@ -136,16 +129,15 @@ echo "Next steps:"
 echo ""
 echo "1. Edit .env with your email and Homebox credentials:"
 echo "   - For Gmail: Create an App Password at https://myaccount.google.com/apppasswords"
-echo "   - For Homebox: Get your API token from Homebox settings"
+echo "   - For Homebox: Set a dedicated service-account API key"
 echo ""
 echo "2. Verify your config in config/config.yml"
 echo ""
 echo "3. Run the processor:"
 echo "   source venv/bin/activate"
-echo "   python src/app.py"
+echo "   python src/app.py --live"
 echo ""
-echo "The first run will download the AI model (~4-5GB)"
-echo "This only happens once and takes 5-10 minutes."
+echo "Make sure Ollama is running and has the configured model available."
 echo ""
 echo "Tips:"
 echo "  - Test with a single receipt email first"

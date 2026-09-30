@@ -1,0 +1,6 @@
+{
+  "subject": "Example Shop receipt 80421",
+  "from": "receipts@example.test",
+  "date": "2026-09-29",
+  "body": "EXAMPLE SHOP\nOrder 80421\nUSB-C Travel Hub\n$49.99\nSubtotal $49.99\nTax $4.00\nTotal $53.99"
+}

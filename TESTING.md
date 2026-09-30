@@ -1,136 +1,81 @@
 # Testing Guide
 
-## Quick Start
+## Safe first-stage pipeline
 
-Run all tests:
-```bash
-./run_tests.sh
-```
-
-Run only fast unit tests (no MLX model loading):
-```bash
-./run_tests.sh --fast
-```
-
-Run with coverage:
-```bash
-./run_tests.sh --coverage
-```
-
-## Test Results Summary
-
-### ✅ Unit Tests (Fast)
-- **test_extract_pre_tags**: Validates `<pre>` tag prioritization ✓
-- **test_remove_noise_tags**: Ensures script/style removal ✓
-- **test_multiple_pre_tags**: Tests multiple receipt sections ✓
-
-**Run time**: ~2 seconds
-
-### ✅ Receipt Type Tests (Slow - loads MLX model)
-- **test_best_buy_receipt**: Non-multipart HTML extraction ✓
-- **test_square_no_items_receipt**: No item breakdown handling ✓
-- **test_zero_dollar_receipt**: $0.00 return/refund handling ✓
-
-**Run time**: ~30 seconds (first run downloads model)
-
-### ✅ Edge Case Tests
-- **test_garbled_ocr_detection**: Detects poor OCR quality ✓
-- **test_pdf_extraction_failed**: Handles missing PDF text ✓
-
-## What We Fixed Today
-
-### 1. Best Buy Receipt Extraction Bug 🐛 → ✅
-**Problem**: Best Buy receipts were failing with `extraction_failed`
-
-**Root Cause**: Non-multipart HTML emails were treated as plain text, so raw HTML was passed to the LLM
-
-**Fix** (src/email_fetcher.py:261-279):
-```python
-# Check content type for non-multipart emails
-if content_type == 'text/html':
-    html_body = extract_text_from_html(payload)
-```
-
-**Result**: Receipt text in `<pre>` tags now extracted first, 95% confidence!
-
-### 2. Better Failure Categorization 🏷️
-
-Now distinguishes between:
-- `extraction_failed` - LLM/parsing errors
-- `no_items_found` - Valid receipts with no line items (Square, returns)
-- `manual_review` - Failed PDF extraction, garbled OCR
-- `low_confidence` - Successful but uncertain extraction
-
-### 3. HTML Extraction Improvements 🔧
-
-Added `extract_text_from_html()` function that:
-- Prioritizes `<pre>` tags (where receipts often live)
-- Removes script, style, meta tags
-- Puts structured content first
-
-## Test Coverage
-
-### Receipt Formats Tested
-| Format | Email Type | Extraction | Status |
-|--------|-----------|------------|--------|
-| Best Buy | Non-multipart HTML | `<pre>` tag | ✅ Working |
-| Square | Multipart | No items | ✅ Expected |
-| Nisolo | Plain text | $0 total | ✅ Expected |
-| J.Crew, Allbirds | Multipart | Standard | ✅ Working |
-| Container Store | Image OCR | Garbled | ✅ Detected |
-| Portland Mattress | PDF | Failed | ✅ Detected |
-
-## Running Specific Tests
+Run the synthetic extraction-to-mapping test:
 
 ```bash
-# Only HTML extraction tests
-pytest tests/test_receipts.py::TestHTMLExtraction -v
-
-# Only receipt type tests
-pytest tests/test_receipts.py::TestReceiptTypes -v
-
-# Only edge cases
-pytest tests/test_receipts.py::TestEdgeCases -v
-
-# Tests matching a keyword
-pytest tests/test_receipts.py -k "best_buy" -v
+python -m unittest tests.test_safe_pipeline tests.test_model_evaluation -v
 ```
 
-## CI/CD Integration
+The test supplies synthetic email data, stubs extraction, and uses a fake Homebox client. It does not load a model, access IMAP, write to Homebox, or persist a receipt.
 
-### GitHub Actions Workflow
-See `tests/README.md` for full GitHub Actions example
+Run the mocked Homebox v0.26.2 entities API contract tests with only Python's standard test runner:
 
-### Test Markers
-- `@pytest.mark.unit` - Fast tests, no external dependencies
-- `@pytest.mark.slow` - Tests that load MLX model
-- `@pytest.mark.integration` - Tests requiring email server
-- `@pytest.mark.edge_case` - Error handling tests
-
-Run specific markers:
 ```bash
-pytest -m unit  # Only unit tests
-pytest -m "not slow"  # Skip slow tests
+python -m unittest tests.test_homebox_entities -v
 ```
 
-## Next Steps
+These tests mock every Homebox HTTP call and cover entity create/update, paginated location and item reads, tag compatibility, and multipart attachment uploads. They do not require credentials or a live service.
 
-To add new test cases:
+The daemon and one-shot mailbox processor refuse to start unless `--live` is supplied. The flag enables IMAP reads, mailbox moves, and Homebox writes. `run_dry_run.py` remains isolated from both integrations.
 
-1. Add test method to appropriate class in `tests/test_receipts.py`
-2. Use descriptive names: `test_<scenario>_<expected>`
-3. Mark with appropriate pytest marker
-4. Update this document
+To evaluate the configured pipeline with an existing Ollama model against the synthetic receipt:
 
-## Verification
-
-Run your full processing and all issues should be resolved:
 ```bash
-source venv/bin/activate
-python run_once.py
+python run_dry_run.py \
+  --input tests/fixtures/synthetic_receipt.json \
+  --ollama-url http://localhost:11434 \
+  --model qwen2.5:14b
 ```
 
-Expected results:
-- Best Buy receipts: **SUCCESS** (items extracted)
-- Square receipts: **no_items_found** (expected)
-- Nisolo $0 receipts: **no_items_found** (expected)
+This command reads only the supplied JSON and YAML config. It contacts the explicitly supplied Ollama endpoint for `/api/tags` and `/api/chat`, then prints extraction results and mapped payloads. It never initializes the email fetcher or Homebox client. The default `DRY_RUN_LOCATION_ID` is only a payload placeholder; pass `--location-id` to preview a different value. Use synthetic or sanitized content because the receipt text is sent to the selected Ollama server.
+
+For a serial comparison of selected installed model tags on the same checked-in synthetic receipt:
+
+```bash
+python run_model_evaluation.py \
+  --ollama-url http://localhost:11434 \
+  --models qwen2.5:14b qwen3:14b phi4:14b gemma4:12b
+```
+
+This reports correctness for the known store, order ID/date, receipt total, and line item, plus client wall time and Ollama load/prompt/generation durations and token counts when returned. Client wall time is seconds; Ollama durations are nanoseconds. Each tag is evaluated in order; the script does not access IMAP or Homebox and does not change Ollama's `keep_alive` behavior. Ollama may keep earlier models loaded according to its normal policy, so choose a small model list and run only when the shared host has capacity. No benchmarks are run automatically.
+
+To request CPU-only execution for every request, add `--num-gpu 0`. Omitting the option leaves placement to the Ollama server (which may use its configured GPU, but does not guarantee P100 use); the comparison does not itself identify which physical device handled inference. Ollama documents per-request `options` on `/api/chat`; its current source maps `num_gpu: 0` to CPU-only execution ([API](https://docs.ollama.com/api/chat), [types.go](https://github.com/ollama/ollama/blob/main/api/types.go), [llama_server.go](https://github.com/ollama/ollama/blob/main/llm/llama_server.go), [sched.go](https://github.com/ollama/ollama/blob/main/server/sched.go)). Confirm the installed server version accepts this option before a user-initiated evaluation.
+
+Possible statuses are `ready_for_review`, `low_confidence`, `manual_review`, `no_items`, and `extraction_failed`. A non-ready result does not include mapped items.
+
+## Running other tests
+
+The repository also contains legacy tests and utilities that are not safe substitutes for the isolated test above:
+
+- Tests marked `slow` instantiate `ReceiptExtractor` and contact the configured Ollama server.
+- Email and Homebox scripts/tests may connect to live services. Do not run them unless live integration testing is explicitly intended and the target accounts/instances are disposable or otherwise approved.
+- `./run_tests.sh` may include those tests; inspect its selected markers before running it.
+
+## Current implementation and later integration
+
+Despite the legacy `src/receipt_extractor_mlx.py` filename and older MLX references in the repository, the checked-in extractor uses Ollama's HTTP API. `OLLAMA_HOST` and `AI_MODEL` select its endpoint and model. Ollama was selected here because it is the existing implementation and the user's homelab already runs it, not because MLX is categorically unsupported on x86. Current MLX docs include Linux CPU and CUDA backends; Tesla P100 compatibility and performance have not been validated for this project.
+
+The client supports `HOMEBOX_API_KEY` as a bearer credential and prefers it over the username/password fallback. Homebox v0.26.2 API keys inherit the owning user's full access; they are not endpoint-scoped. Prefer a dedicated service account with only the access the app needs, and create/manage the key manually in Homebox. Never mint keys from this app or put credentials in source, container images, logs, or plaintext manifests.
+
+If an entity is created but its required purchase-details update fails, the Homebox client raises a partial-write error. The receipt processor stops processing that receipt, reports `partial_write` (not success), and moves the source message to the configured manual-review folder so a later mailbox scan cannot create a duplicate automatically. The created entity ID is returned in the processing result for reconciliation.
+
+Homebox v0.26.2 removed the item and location routes in favor of the unified entities API. The client now uses `/api/v1/entities` (`isLocation=true` for location search), `parentId` for an item's parent, `/api/v1/entities/{id}/attachments`, and `/api/v1/tags` for the former label behavior. Its full entity updates are based on the fetched/created entity so unrelated purchase, warranty, tag, and entity fields are retained. Reference: [Homebox Entity Merge API Migration Guide](https://github.com/sysadminsmedia/homebox/blob/v0.26.2/docs/src/content/docs/en/advanced/entity-merge-upgrade.mdx).
+
+## Deployment contract and remaining work
+
+The Docker image is configured to start the live daemon (`python src/app.py --live`). The one-shot command is `python run_once.py --live`; both are intentionally explicit opt-ins because they read/move mailbox messages and may write Homebox items. The isolated synthetic tests and `run_dry_run.py` do not enable live processing. Docker image publication and any fork/registry setup remain external deployment steps.
+
+For a future Kubernetes integration, keep credentials in an External Secrets Operator (ESO)-backed Secret and inject these exact application environment keys: `EMAIL_ADDRESS`, `EMAIL_PASSWORD`, and `HOMEBOX_API_KEY`. `EMAIL_PASSWORD` is the IMAP app password; `HOMEBOX_API_KEY` should be a dedicated service-account key. Do not create or rotate keys automatically from this repository. Non-secret settings include `EMAIL_IMAP_HOST`, `EMAIL_IMAP_PORT`, `HOMEBOX_URL`, `OLLAMA_HOST`, `AI_MODEL`, `CHECK_INTERVAL`, and `MIN_CONFIDENCE`; mount `config/config.yml` read-only and persist only the intended `data/` directories.
+
+Keep any scheduled job suspended until image publication, secret injection, endpoint egress, and a human-reviewed test plan are ready. A scheduled one-shot job should run `python run_once.py --live`, not the daemon. `OLLAMA_HOST` must be an address routable and allowed from inside the pod/container; `localhost` refers to that same pod/container, not the Ollama host. Confirm access to Ollama, Homebox, and the IMAP host/port in the deployment network policy. The CPU-only evaluation option is `--num-gpu 0`; otherwise Ollama uses its normal placement policy, which may use the shared P100.
+
+If a later deployment is integrated through a separate `lab-manifests` repository, keep the contract to configuration and secret references:
+
+- Inject `OLLAMA_HOST` as an address reachable from the application container and `AI_MODEL` as an already-installed Ollama model tag.
+- Inject `HOMEBOX_URL`; provide `HOMEBOX_API_KEY` through a secret reference (or use username/password only as a legacy fallback).
+- Provide IMAP address, port, username, and app password through secret-backed environment variables; do not enable mailbox polling in the local dry-run.
+- Mount `config/config.yml` read-only and persist only the intended `data/` directories.
+
+No `lab-manifests` changes are part of this local test stage.

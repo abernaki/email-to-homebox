@@ -7,11 +7,11 @@ Monitors an IMAP mailbox for receipt emails, uses a local LLM (via Ollama) to ex
 ```bash
 source venv/bin/activate
 
-# One-shot: process all emails in the Receipts folder once
-python run_once.py
+# One-shot live processing: reads/moves mailbox messages and writes to Homebox
+python run_once.py --live
 
-# Daemon: poll every CHECK_INTERVAL seconds (used in Docker)
-python src/app.py
+# Daemon live processing: poll every CHECK_INTERVAL seconds
+python src/app.py --live
 ```
 
 ### Docker (primary deployment)
@@ -67,12 +67,14 @@ IMAP → EmailFetcher → ReceiptExtractor (Ollama) → app.py logic → Homebox
 
 ### Homebox API — two-step item creation
 
-Homebox's create endpoint only accepts a small set of fields. Purchase details require a separate PUT:
+Homebox v0.26.2 removed the separate item and location routes in favor of entities:
 
-1. `POST /api/v1/items` — name, locationId, description, quantity
-2. `PUT /api/v1/items/{id}` — purchasePrice, purchaseFrom, purchaseTime, manufacturer, modelNumber, serialNumber
+- `POST /api/v1/entities` creates an item with `parentId`, description, quantity, `tagIds`, and supported identifiers. Omitting `entityTypeId` selects the group's default Item type.
+- `PUT /api/v1/entities/{id}` applies purchase details using the complete entity update contract.
+- `GET /api/v1/entities?isLocation=true` looks up locations; attachments use `/api/v1/entities/{id}/attachments`.
+- Legacy client payload fields `locationId`, `labelIds`, and `purchaseTime` translate to `parentId`, `tagIds`, and `purchaseDate`.
 
-The PUT must include `name` and `locationId` even when not changing them or they get cleared.
+See the [official entity-merge migration guide](https://github.com/sysadminsmedia/homebox/blob/v0.26.2/docs/src/content/docs/en/advanced/entity-merge-upgrade.mdx).
 
 ### Confidence scoring
 

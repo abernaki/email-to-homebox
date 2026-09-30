@@ -35,7 +35,7 @@ Successfully implemented automatic product image extraction and upload functiona
 
 2. **`src/homebox_client.py`**
    - Added `upload_attachment()` method
-   - Multipart form upload to `/api/v1/items/{id}/attachments`
+   - Multipart form upload to `/api/v1/entities/{id}/attachments`
    - Handles authentication and token refresh
 
 3. **`src/app.py`**
@@ -132,7 +132,7 @@ This will:
 ### Test Full Flow
 
 ```bash
-python run_once.py
+python run_once.py --live
 ```
 
 This will:
