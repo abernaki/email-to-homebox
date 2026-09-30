@@ -9,6 +9,7 @@ import logging
 import re
 import html
 import quopri
+import time
 import requests as http_requests
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ class ReceiptExtractor:
         self.temperature = float(os.getenv('AI_TEMPERATURE', '0.1'))
         self.max_tokens = int(os.getenv('AI_MAX_TOKENS', '2048'))
         self.ollama_host = os.getenv('OLLAMA_HOST', _DEFAULT_OLLAMA_HOST).rstrip('/')
+        self.last_response_metrics = {}
 
         self._check_connection()
 
@@ -72,7 +74,7 @@ class ReceiptExtractor:
             logger.warning(f"Error cleaning email text: {e}")
             return text
 
-    def extract(self, email_data):
+    def extract(self, email_data, options=None):
         """Extract receipt data from email"""
         try:
             logger.info(f"Extracting data from: {email_data.get('subject')}")
@@ -113,7 +115,9 @@ Email Body:
 {full_content[:8000]}
 """
 
-            response = self._generate_response(system_prompt, extraction_prompt, email_content)
+            response = self._generate_response(
+                system_prompt, extraction_prompt, email_content, options=options
+            )
 
             if not response:
                 logger.error("No response from model")
@@ -137,9 +141,15 @@ Email Body:
             logger.error(f"Error extracting receipt data: {e}", exc_info=True)
             return None
 
-    def _generate_response(self, system_prompt, user_prompt, content):
+    def _generate_response(self, system_prompt, user_prompt, content, options=None):
         """Generate response using Ollama /api/chat"""
         try:
+            self.last_response_metrics = {}
+            request_options = {
+                "temperature": self.temperature,
+                "num_predict": self.max_tokens,
+            }
+            request_options.update(options or {})
             payload = {
                 "model": self.model_name,
                 "messages": [
@@ -147,21 +157,35 @@ Email Body:
                     {"role": "user", "content": f"{user_prompt}\n\n{content}"}
                 ],
                 "stream": False,
-                "options": {
-                    "temperature": self.temperature,
-                    "num_predict": self.max_tokens,
-                }
+                "options": request_options
             }
 
             logger.debug(f"Sending request to Ollama (max {self.max_tokens} tokens)...")
+            started_at = time.perf_counter()
             response = http_requests.post(
                 f"{self.ollama_host}/api/chat",
                 json=payload,
                 timeout=300,
             )
+            client_wall_seconds = time.perf_counter() - started_at
             response.raise_for_status()
-
-            return response.json()['message']['content']
+            result = response.json()
+            self.last_response_metrics = {
+                'client_wall_seconds': client_wall_seconds,
+                **{
+                    name: result[name]
+                    for name in (
+                        'total_duration',
+                        'load_duration',
+                        'prompt_eval_count',
+                        'prompt_eval_duration',
+                        'eval_count',
+                        'eval_duration',
+                    )
+                    if name in result
+                }
+            }
+            return result['message']['content']
 
         except http_requests.Timeout:
             logger.error("Ollama request timed out after 300s")

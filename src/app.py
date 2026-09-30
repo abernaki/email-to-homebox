@@ -1,26 +1,20 @@
 #!/usr/bin/env python3
 """
-Receipt Processor - Main Application (MLX Version)
-Monitors email for receipts, extracts data with MLX-LM, and adds to Homebox
+Receipt Processor - Main Application
+Monitors email for receipts, extracts data with Ollama, and adds to Homebox
 """
 
 import os
 import sys
 import time
+import argparse
 import logging
 import yaml
-import requests
 from datetime import datetime
 from pathlib import Path
-from dotenv import load_dotenv
 
-from email_fetcher import EmailFetcher
-from receipt_extractor_mlx import ReceiptExtractor
-from homebox_client import HomeboxClient
-from image_handler import search_product_image, match_images_to_items
-
-# Load environment variables
-load_dotenv()
+from homebox_mapping import map_to_homebox_item, sanitize_item_name
+from homebox_errors import PartialEntityUpdateError
 
 # Setup logging
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
@@ -86,7 +80,7 @@ def process_receipt(email_data, extractor, homebox, config):
     try:
         logger.info(f"Processing email: {email_data['subject']}")
 
-        # Extract receipt data using MLX
+        # Extract receipt data using Ollama
         receipt_data = extractor.extract(email_data)
 
         if not receipt_data:
@@ -141,6 +135,8 @@ def process_receipt(email_data, extractor, homebox, config):
         # Match images to items if available
         image_matches = {}
         if email_images:
+            from image_handler import match_images_to_items
+
             image_matches = match_images_to_items(email_images, receipt_data.get('items', []))
 
         # Add items to Homebox
@@ -172,6 +168,21 @@ def process_receipt(email_data, extractor, homebox, config):
                     })
                 else:
                     logger.error(f"✗ Failed to add: {item['name']}")
+            except PartialEntityUpdateError as e:
+                logger.error(
+                    "Homebox entity %s was created without all purchase details; "
+                    "stopping receipt processing to prevent duplicate creation",
+                    e.entity_id,
+                )
+                try:
+                    save_failed_receipt(email_data, 'partial_homebox_write', receipt_data)
+                except Exception:
+                    logger.exception("Could not persist partial Homebox write for manual review")
+                return {
+                    'status': 'partial_write',
+                    'reason': 'purchase_update_failed',
+                    'entity_id': e.entity_id,
+                }
             except Exception as e:
                 logger.error(f"Error adding item {item.get('name')}: {e}")
 
@@ -197,33 +208,6 @@ def process_receipt(email_data, extractor, homebox, config):
         logger.error(f"Error processing receipt: {e}", exc_info=True)
         save_failed_receipt(email_data, str(e))
         return {'status': 'failed', 'reason': str(e)}
-
-
-def sanitize_item_name(name):
-    """
-    Sanitize item name to remove characters that might cause Homebox issues
-
-    Replaces trademark symbols and other special characters that might
-    cause problems with database queries or UI display.
-    """
-    if not name:
-        return name
-
-    # Replace common trademark/copyright symbols
-    replacements = {
-        '™': '',  # Trademark
-        '®': '',  # Registered trademark
-        '©': '',  # Copyright
-    }
-
-    sanitized = name
-    for char, replacement in replacements.items():
-        sanitized = sanitized.replace(char, replacement)
-
-    # Clean up multiple spaces that might result from removing symbols
-    sanitized = ' '.join(sanitized.split())
-
-    return sanitized
 
 
 def is_non_physical_item(item, config):
@@ -259,56 +243,6 @@ def is_non_physical_item(item, config):
             return True
 
     return False
-
-
-def map_to_homebox_item(item, receipt_data, config, location_id):
-    """Map extracted item data to Homebox item format"""
-    category = item.get('category', 'other')
-    homebox_category = config['homebox']['category_map'].get(category, 'General')
-
-    # Format notes using template
-    notes_template = config['homebox']['notes_template']
-    notes = notes_template.format(
-        store=receipt_data.get('store', 'Unknown'),
-        date=receipt_data.get('order_date', 'Unknown'),
-        order_id=receipt_data.get('order_id', 'N/A')
-    )
-
-    # Add description from item if available
-    if item.get('description'):
-        notes = f"{item['description']}\n\n{notes}"
-
-    # Sanitize item name to avoid issues with special characters
-    item_name = sanitize_item_name(item['name'])
-
-    homebox_item = {
-        'name': item_name,
-        'description': notes,
-        'quantity': item.get('quantity', 1),
-        'locationId': location_id
-    }
-
-    # Add purchase info if available (will be sent in update request)
-    if item.get('price') and item['price'] > 0:
-        homebox_item['purchasePrice'] = float(item['price'])
-
-    if receipt_data.get('store'):
-        homebox_item['purchaseFrom'] = receipt_data['store']
-
-    if receipt_data.get('order_date'):
-        homebox_item['purchaseTime'] = receipt_data['order_date']
-
-    # Add manufacturer/model info if available in item data
-    if item.get('manufacturer'):
-        homebox_item['manufacturer'] = item['manufacturer']
-
-    if item.get('model_number'):
-        homebox_item['modelNumber'] = item['model_number']
-
-    if item.get('serial_number'):
-        homebox_item['serialNumber'] = item['serial_number']
-
-    return homebox_item
 
 
 def upload_images_to_items(created_items, image_matches, homebox, config):
@@ -374,6 +308,8 @@ def upload_images_to_items(created_items, image_matches, homebox, config):
 
             logger.info(f"No email image for '{item_name}', searching DuckDuckGo... (search {search_count + 1}/{max_searches})")
             try:
+                from image_handler import search_product_image
+
                 search_results = search_product_image(item_name, manufacturer, max_results=1)
                 search_count += 1
 
@@ -494,30 +430,14 @@ def add_pdf_cross_references(created_items, first_item_id, homebox):
             if first_item_id not in current_description:
                 updated_description = current_description + cross_ref_note
 
-                # IMPORTANT: Include ALL fields in PUT request to avoid resetting values
-                update_data = {
-                    'name': item_data.get('name'),
-                    'locationId': item_data.get('location', {}).get('id'),
-                    'description': updated_description,
-                    'quantity': item_data.get('quantity', 0),
-                    'purchasePrice': item_data.get('purchasePrice', 0),
-                    'purchaseFrom': item_data.get('purchaseFrom', ''),
-                    'purchaseTime': item_data.get('purchaseTime', ''),
-                    'manufacturer': item_data.get('manufacturer', ''),
-                }
-
-                # Send update request
-                response = requests.put(
-                    f"{homebox_url}/api/v1/items/{item_id}",
-                    headers=homebox.headers,
-                    json=update_data,
-                    timeout=30
-                )
-
-                if response.status_code == 200:
+                if homebox.update_item(
+                    item_id,
+                    {'description': updated_description},
+                    current_entity=item_data
+                ):
                     logger.info(f"✓ Added PDF cross-reference to: {item_name}")
                 else:
-                    logger.warning(f"Failed to add cross-reference to {item_name}: {response.status_code}")
+                    logger.warning(f"Failed to add cross-reference to {item_name}")
 
         except Exception as e:
             logger.error(f"Error adding cross-reference to {item_name}: {e}")
@@ -549,12 +469,19 @@ def handle_receipt_result(result, email_data, email_fetcher, config):
             logger.info(f"✓ Successfully processed")
             return {}
 
-    elif status == 'low_confidence':
+    elif status in ('low_confidence', 'partial_write'):
         # Move to manual processing folder
         manual_folder = config['email'].get('move_to_folder_on_low_confidence', 'Receipts/Manual Review')
         if manual_folder:
             email_fetcher.move_to_folder(email_data['uid'], manual_folder)
-            logger.info(f"⚠ Low confidence - moved to '{manual_folder}'")
+            if status == 'partial_write':
+                logger.warning(
+                    "Homebox item was partially written; moved to manual review folder "
+                    "'%s' to prevent automatic reprocessing",
+                    manual_folder,
+                )
+            else:
+                logger.info(f"⚠ Low confidence - moved to '{manual_folder}'")
             return {'moved_to': manual_folder}
         else:
             logger.info(f"⚠ Low confidence")
@@ -632,8 +559,28 @@ def save_processed_receipt(email_data, receipt_data):
         yaml.dump(data, f)
 
 
-def main():
+def main(argv=None):
     """Main application loop"""
+    parser = argparse.ArgumentParser(description='Monitor email receipts and create Homebox items.')
+    parser.add_argument(
+        '--live',
+        action='store_true',
+        help='Enable IMAP polling, mailbox moves, and Homebox writes'
+    )
+    args = parser.parse_args(argv)
+    if not args.live:
+        parser.error('live processing is disabled by default; pass --live to opt in')
+
+    from dotenv import load_dotenv
+    from email_fetcher import EmailFetcher
+    from receipt_extractor_mlx import ReceiptExtractor
+    from homebox_client import HomeboxClient
+
+    load_dotenv()
+    logging.getLogger().setLevel(
+        getattr(logging, os.getenv('LOG_LEVEL', 'INFO').upper(), logging.INFO)
+    )
+
     logger.info("=" * 60)
     logger.info("Receipt Processor Starting (Ollama-powered)")
     logger.info("=" * 60)

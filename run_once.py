@@ -5,40 +5,47 @@ One-time receipt processor - processes all emails in Receipts folder once
 
 import os
 import sys
-import yaml
+import argparse
 import logging
 from pathlib import Path
-from dotenv import load_dotenv
 
 # Add src to path
-sys.path.insert(0, 'src')
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'src'))
 
-from email_fetcher import EmailFetcher
-from receipt_extractor_mlx import ReceiptExtractor
-from homebox_client import HomeboxClient
-from app import process_receipt, load_config, handle_receipt_result
-
-# Load environment first (before logging setup)
-load_dotenv()
-
-# Setup logging - use LOG_LEVEL from .env
-log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
-logging.basicConfig(
-    level=getattr(logging, log_level, logging.INFO),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
-# Set all loggers to the same level
-level = getattr(logging, log_level, logging.INFO)
-logging.getLogger('homebox_client').setLevel(level)
-logging.getLogger('app').setLevel(level)
-logging.getLogger('email_fetcher').setLevel(level)
-logging.getLogger('receipt_extractor_mlx').setLevel(level)
 
-
-def main():
+def main(argv=None):
     """Run one-time processing of receipts"""
+    parser = argparse.ArgumentParser(description='Process receipts from the configured IMAP mailbox.')
+    parser.add_argument(
+        '--live',
+        action='store_true',
+        help='Enable IMAP reads, mailbox moves, and Homebox writes'
+    )
+    args = parser.parse_args(argv)
+    if not args.live:
+        parser.error('live processing is disabled by default; pass --live to opt in')
+
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
+    level = getattr(logging, log_level, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    logging.getLogger('homebox_client').setLevel(level)
+    logging.getLogger('app').setLevel(level)
+    logging.getLogger('email_fetcher').setLevel(level)
+    logging.getLogger('receipt_extractor_mlx').setLevel(level)
+
+    from email_fetcher import EmailFetcher
+    from receipt_extractor_mlx import ReceiptExtractor
+    from homebox_client import HomeboxClient
+    from app import process_receipt, load_config, handle_receipt_result
+
     logger.info("=" * 60)
     logger.info("One-Time Receipt Processor")
     logger.info("=" * 60)

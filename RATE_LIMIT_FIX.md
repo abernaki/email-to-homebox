@@ -143,7 +143,7 @@ Run the processor to test the fixes:
 
 ```bash
 source venv/bin/activate
-python run_once.py
+python run_once.py --live
 ```
 
 You should see log messages like:

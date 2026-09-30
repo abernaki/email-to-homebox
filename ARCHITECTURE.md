@@ -63,11 +63,13 @@ This system automatically processes receipt emails, extracts purchase data using
 #### 3. Homebox Client (`src/homebox_client.py`)
 - Handles authentication via username/password login
 - Token-based Bearer auth with auto-refresh on 401
-- Two-step item creation (Homebox API limitation)
+- Creates and updates item entities via the Homebox entities API
 
-**Two-Step Item Creation:**
-1. **POST /api/v1/items** - Create with: name, locationId, description, quantity
-2. **PUT /api/v1/items/{id}** - Update with: purchasePrice, purchaseFrom, purchaseTime, manufacturer, modelNumber, serialNumber
+**Entity Creation and Update:**
+1. **POST /api/v1/entities** - Create with: name, parentId, description, quantity, tagIds, and supported identifiers
+2. **PUT /api/v1/entities/{id}** - Apply purchase details using a complete entity update payload that preserves returned fields
+
+Location lookup uses `GET /api/v1/entities?isLocation=true`; attachments use `/api/v1/entities/{id}/attachments`, and the former labels integration uses `/api/v1/tags`. Legacy `locationId`, `labelIds`, and `purchaseTime` inputs are translated to `parentId`, `tagIds`, and `purchaseDate`.
 
 **Key Methods:**
 - `_login()` - Get bearer token
@@ -120,8 +122,10 @@ EMAIL_IMAP_PORT=993  # Standard IMAP SSL port
 
 # Homebox
 HOMEBOX_URL=https://your-homebox-url/
-HOMEBOX_USERNAME=username
-HOMEBOX_PASSWORD=password
+HOMEBOX_API_KEY=dedicated-service-account-key
+# Legacy username/password fallback only
+# HOMEBOX_USERNAME=username
+# HOMEBOX_PASSWORD=password
 
 # MLX Model
 AI_MODEL=mlx-community/Qwen2.5-7B-Instruct-4bit
@@ -146,7 +150,7 @@ Email (IMAP) → Email Fetcher → Receipt Extractor (MLX) → Validation
        ↓            ↓                                       ↓
    Has text?   Extract Images                   Homebox Client ← App Logic
        ↓        (attachments +                             ↓
-    Minimal     HTML links)                     Homebox API (two-step create)
+    Minimal     HTML links)                     Homebox entities API
        ↓            ↓                                       ↓
     OCR Text ← Has Images?                      Upload Images → Homebox API
        ↓                                                    ↑
@@ -227,21 +231,15 @@ email-to-homebox/
 - Returns token with "Bearer " prefix already included
 - Token expires, auto-refresh on 401
 
-### Item Creation (Important!)
-Homebox API has limited fields on create endpoint:
+### Item Creation (Homebox v0.26.2)
+Homebox removed the separate item and location routes in favor of entities:
 
-**Create (POST /api/v1/items):**
-- name (required)
-- locationId (required)
-- description, quantity, labelIds, parentId (optional)
+- `POST /api/v1/entities` creates an item with `parentId`, description, quantity, `tagIds`, and supported identifiers. Omitting `entityTypeId` selects the group's default Item type.
+- `PUT /api/v1/entities/{id}` applies purchase details using the complete entity update contract.
+- `GET /api/v1/entities?isLocation=true` looks up locations; attachments use `/api/v1/entities/{id}/attachments`.
+- Legacy client payload fields `locationId`, `labelIds`, and `purchaseTime` translate to `parentId`, `tagIds`, and `purchaseDate`.
 
-**Update (PUT /api/v1/items/{id}):**
-- name, locationId (required even if not changing)
-- purchasePrice, purchaseFrom, purchaseTime
-- manufacturer, modelNumber, serialNumber
-- All other extended fields
-
-**Current Implementation:** Create with basic fields, immediately update with purchase info.
+See the [official entity-merge migration guide](https://github.com/sysadminsmedia/homebox/blob/v0.26.2/docs/src/content/docs/en/advanced/entity-merge-upgrade.mdx).
 
 ## Development Notes
 
@@ -314,7 +312,7 @@ Homebox API has limited fields on create endpoint:
   - Filters by size (100x100 to 2000x2000), file size (>10KB), URL patterns
   - Validates with Pillow
 - `src/homebox_client.py` - Added `upload_attachment()` method
-  - Multipart form upload to `/api/v1/items/{id}/attachments`
+  - Multipart form upload to `/api/v1/entities/{id}/attachments`
   - Handles authentication and retry on 401
 - `src/image_handler.py` - NEW file for image search
   - DuckDuckGo search fallback when no email images
@@ -348,7 +346,7 @@ Homebox API has limited fields on create endpoint:
 To work on **email as PDF**:
 1. Research Python libraries: `weasyprint` or `pdfkit` for HTML→PDF conversion
 2. Email body is already extracted in `email_fetcher.py`
-3. Homebox attachment API likely POST to `/api/v1/items/{id}/attachments`
+3. Homebox attachment API uses `POST /api/v1/entities/{id}/attachments`
 
 To work on **product manuals**:
 1. Extract manufacturer + model from receipt (already in JSON)

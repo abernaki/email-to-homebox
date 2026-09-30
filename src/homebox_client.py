@@ -4,7 +4,10 @@ Homebox Client - Interacts with Homebox API
 
 import os
 import logging
+import mimetypes
 import requests
+
+from homebox_errors import PartialEntityUpdateError
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +19,7 @@ class HomeboxClient:
         self.base_url = os.getenv('HOMEBOX_URL', '').rstrip('/')
         self.username = os.getenv('HOMEBOX_USERNAME', '')
         self.password = os.getenv('HOMEBOX_PASSWORD', '')
+        self.api_key = os.getenv('HOMEBOX_API_KEY', '').strip()
         self.token = None
 
         # Initialize headers first
@@ -23,11 +27,21 @@ class HomeboxClient:
             'Content-Type': 'application/json'
         }
 
-        if not self.base_url or not self.username or not self.password:
-            logger.warning("Homebox URL, username, or password not configured")
-        else:
-            # Automatically login on initialization
+        if not self.base_url:
+            logger.warning("Homebox URL not configured")
+        elif self.api_key:
+            self.headers['Authorization'] = self._bearer_authorization(self.api_key)
+        elif self.username and self.password:
             self._login()
+        else:
+            logger.warning("Homebox API key or username/password not configured")
+
+    @staticmethod
+    def _bearer_authorization(token):
+        """Return a correctly formatted bearer authorization header value."""
+        if token.startswith('Bearer '):
+            return token
+        return f'Bearer {token}'
 
     def _login(self):
         """Login to Homebox and get bearer token"""
@@ -47,11 +61,7 @@ class HomeboxClient:
             self.token = data.get('token')
 
             if self.token:
-                # Check if token already has "Bearer" prefix
-                if self.token.startswith('Bearer '):
-                    self.headers['Authorization'] = self.token
-                else:
-                    self.headers['Authorization'] = f'Bearer {self.token}'
+                self.headers['Authorization'] = self._bearer_authorization(self.token)
                 logger.debug("✓ Successfully logged into Homebox")
                 return True
             else:
@@ -77,127 +87,152 @@ class HomeboxClient:
             logger.error(f"Failed to connect to Homebox: {e}")
             return False
     
-    def create_item(self, item_data):
-        """Create a new item in Homebox (two-step: create then update)"""
+    @staticmethod
+    def _entity_update_payload(entity, updates=None, item_id=None):
+        """Build a complete EntityUpdate body while preserving existing entity data."""
+        updates = dict(updates or {})
+        payload = {
+            'id': item_id or entity.get('id'),
+            'name': entity.get('name', ''),
+            'description': entity.get('description', ''),
+            'serialNumber': entity.get('serialNumber', ''),
+            'modelNumber': entity.get('modelNumber', ''),
+            'manufacturer': entity.get('manufacturer', ''),
+            'warrantyDetails': entity.get('warrantyDetails', ''),
+            'warrantyExpires': entity.get('warrantyExpires', ''),
+            'purchaseFrom': entity.get('purchaseFrom', ''),
+            'soldTo': entity.get('soldTo', ''),
+            'soldNotes': entity.get('soldNotes', ''),
+            'notes': entity.get('notes', ''),
+            'tagIds': [tag['id'] for tag in entity.get('tags', []) if tag.get('id')],
+            'fields': entity.get('fields', []),
+            'assetId': entity.get('assetId', ''),
+            'quantity': entity.get('quantity', 0),
+            'purchasePrice': entity.get('purchasePrice', 0),
+            'soldPrice': entity.get('soldPrice', 0),
+            'parentId': (entity.get('parent') or {}).get('id'),
+            'entityTypeId': (entity.get('entityType') or {}).get('id'),
+            'insured': entity.get('insured', False),
+            'archived': entity.get('archived', False),
+            'syncChildEntityLocations': entity.get('syncChildEntityLocations', False),
+            'lifetimeWarranty': entity.get('lifetimeWarranty', False),
+            'purchaseDate': entity.get('purchaseDate', ''),
+            'soldDate': entity.get('soldDate', ''),
+        }
+
+        if 'parentId' in updates or 'locationId' in updates:
+            parent_id = updates.pop('parentId', None)
+            legacy_location_id = updates.pop('locationId', None)
+            payload['parentId'] = parent_id if parent_id is not None else legacy_location_id
+        if 'labelIds' in updates:
+            updates.setdefault('tagIds', updates.pop('labelIds'))
+        if 'purchaseTime' in updates:
+            updates.setdefault('purchaseDate', updates.pop('purchaseTime'))
+        for key, value in updates.items():
+            if key in payload:
+                payload[key] = value
+        return payload
+
+    def _update_entity(self, item_id, updates, current_entity=None):
+        """Apply a full Homebox entity update, optionally reusing a fetched entity."""
+        if current_entity is None:
+            current_entity = self.get_item(item_id)
+        if not current_entity:
+            logger.error(f"Could not fetch entity {item_id} before update")
+            return None
         try:
-            logger.debug(f"Creating item: {item_data.get('name')}")
+            response = requests.put(
+                f"{self.base_url}/api/v1/entities/{item_id}",
+                headers=self.headers,
+                json=self._entity_update_payload(current_entity, updates, item_id),
+                timeout=30
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error updating entity {item_id}: {e}")
+            return None
 
-            # Step 1: Create with basic fields only
-            create_data = {
-                'name': item_data['name'],
-                'locationId': item_data['locationId']
-            }
+    def update_item(self, item_id, updates, current_entity=None):
+        """Update an item using Homebox's full entity update contract."""
+        return self._update_entity(item_id, updates, current_entity)
 
-            # Add optional create fields
-            if 'description' in item_data:
-                create_data['description'] = item_data['description']
-            if 'quantity' in item_data:
-                create_data['quantity'] = item_data['quantity']
-            if 'labelIds' in item_data:
-                create_data['labelIds'] = item_data['labelIds']
-            if 'parentId' in item_data:
-                create_data['parentId'] = item_data['parentId']
+    def create_item(self, item_data):
+        """Create an item entity and apply purchase details supported by Homebox."""
+        create_data = {
+            'name': item_data['name'],
+            'parentId': item_data.get('parentId', item_data.get('locationId')),
+            'description': item_data.get('description', ''),
+            'quantity': item_data.get('quantity', 1),
+            'tagIds': item_data.get('tagIds', item_data.get('labelIds', [])),
+        }
+        if 'entityTypeId' in item_data:
+            create_data['entityTypeId'] = item_data['entityTypeId']
 
-            logger.debug(f"Create data: {create_data}")
-
+        try:
             response = requests.post(
-                f"{self.base_url}/api/v1/items",
+                f"{self.base_url}/api/v1/entities",
                 headers=self.headers,
                 json=create_data,
                 timeout=30
             )
-
-            logger.debug(f"Create response status: {response.status_code}")
-
-            if response.status_code == 201:
-                result = response.json()
-                item_id = result.get('id')
-                logger.info(f"✓ Created item: {item_data.get('name')} (ID: {item_id})")
-
-                # Step 2: Update with purchase price and other fields
-                # Update requires name and locationId even if not changing them
-                update_data = {
-                    'name': result.get('name'),
-                    'locationId': result.get('location', {}).get('id')
-                }
-
-                update_fields = ['purchasePrice', 'purchaseFrom', 'purchaseTime',
-                                'manufacturer', 'modelNumber', 'serialNumber',
-                                'notes', 'warrantyDetails', 'warrantyExpires',
-                                'description', 'quantity']
-
-                for field in update_fields:
-                    if field in item_data:
-                        update_data[field] = item_data[field]
-
-                # Check if we have any fields to update beyond the required ones
-                has_updates = any(field in item_data for field in update_fields)
-                if has_updates:
-                    logger.debug(f"Update data: {update_data}")
-                    update_response = requests.put(
-                        f"{self.base_url}/api/v1/items/{item_id}",
-                        headers=self.headers,
-                        json=update_data,
-                        timeout=30
-                    )
-                    logger.debug(f"Update response status: {update_response.status_code}")
-
-                    if update_response.status_code == 200:
-                        result = update_response.json()
-                        logger.debug(f"✓ Updated item with additional fields")
-                        # Debug: Check what Homebox returned
-                        logger.debug(f"Homebox returned quantity: {result.get('quantity')}, price: {result.get('purchasePrice')}")
-
-                        # Double-check: Fetch the item back to verify it was actually saved
-                        verify = self.get_item(item_id)
-                        if verify:
-                            logger.info(f"VERIFICATION - Fetched item back from Homebox:")
-                            logger.info(f"  Name: {verify.get('name')}")
-                            logger.info(f"  Quantity: {verify.get('quantity')}")
-                            logger.info(f"  Price: {verify.get('purchasePrice')}")
-                    else:
-                        logger.warning(f"Failed to update item fields: {update_response.status_code}")
-                        logger.debug(f"Update response: {update_response.text}")
-
-                return result
-            elif response.status_code == 401:
-                # Token expired, try to re-login once
-                logger.warning("Token expired, attempting to re-login...")
-                if self._login():
-                    # Retry the request
+            if response.status_code == 401:
+                if self.api_key:
+                    logger.error("Homebox rejected the configured API key")
+                else:
+                    logger.warning("Token expired, attempting to re-login...")
+                if not self.api_key and self._login():
                     response = requests.post(
-                        f"{self.base_url}/api/v1/items",
+                        f"{self.base_url}/api/v1/entities",
                         headers=self.headers,
-                        json=item_data,
+                        json=create_data,
                         timeout=30
                     )
-                    if response.status_code == 201:
-                        result = response.json()
-                        logger.info(f"✓ Created item: {item_data.get('name')}")
-                        return result
+            if response.status_code != 201:
+                logger.error(f"Failed to create entity. Status: {response.status_code}")
+                logger.debug(f"Response: {response.text}")
+                return None
 
-                logger.error(f"Failed to create item after re-login. Status: {response.status_code}")
-                logger.debug(f"Response: {response.text}")
-                return None
-            else:
-                logger.error(f"Failed to create item. Status: {response.status_code}")
-                logger.debug(f"Response: {response.text}")
-                return None
-                
+            result = response.json()
+            entity_id = result.get('id')
+            logger.info(f"✓ Created item: {item_data.get('name')} (ID: {entity_id})")
+
+            extra_fields = {
+                'purchasePrice', 'purchaseFrom', 'purchaseTime', 'purchaseDate',
+                'serialNumber', 'manufacturer', 'modelNumber', 'notes',
+                'warrantyDetails', 'warrantyExpires',
+            }
+            if extra_fields.intersection(item_data):
+                update_result = self._update_entity(entity_id, item_data, current_entity=result)
+                if not update_result:
+                    raise PartialEntityUpdateError(entity_id)
+                result = update_result
+            return result
+        except PartialEntityUpdateError:
+            raise
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error creating item: {e}")
+            logger.error(f"Error creating entity: {e}")
             return None
     
     def get_locations(self):
-        """Get all locations"""
+        """Get all locations from the paginated entities endpoint."""
         try:
-            response = requests.get(
-                f"{self.base_url}/api/v1/locations",
-                headers=self.headers,
-                timeout=10
-            )
-            response.raise_for_status()
-            return response.json()
+            locations = []
+            page = 1
+            while True:
+                response = requests.get(
+                    f"{self.base_url}/api/v1/entities",
+                    headers=self.headers,
+                    params={'isLocation': 'true', 'page': page, 'pageSize': 100},
+                    timeout=30
+                )
+                response.raise_for_status()
+                result = response.json()
+                page_items = result.get('items', [])
+                locations.extend(page_items)
+                if len(locations) >= result.get('total', len(locations)) or not page_items:
+                    return locations
+                page += 1
         except requests.exceptions.RequestException as e:
             logger.error(f"Error getting locations: {e}")
             return None
@@ -216,10 +251,10 @@ class HomeboxClient:
         return None
     
     def get_labels(self):
-        """Get all labels"""
+        """Get all tags (Homebox labels were renamed to tags)."""
         try:
             response = requests.get(
-                f"{self.base_url}/api/v1/labels",
+                f"{self.base_url}/api/v1/tags",
                 headers=self.headers,
                 timeout=10
             )
@@ -242,7 +277,7 @@ class HomeboxClient:
         """
         try:
             response = requests.get(
-                f"{self.base_url}/api/v1/items",
+                f"{self.base_url}/api/v1/entities",
                 headers=self.headers,
                 params={'page': page, 'pageSize': page_size},
                 timeout=30
@@ -265,7 +300,7 @@ class HomeboxClient:
         """
         try:
             response = requests.get(
-                f"{self.base_url}/api/v1/items/{item_id}",
+                f"{self.base_url}/api/v1/entities/{item_id}",
                 headers=self.headers,
                 timeout=10
             )
@@ -294,7 +329,11 @@ class HomeboxClient:
             # Prepare multipart form data
             # Note: Don't include Content-Type header for multipart, requests will set it
             files = {
-                'file': (filename, image_data, 'image/jpeg')
+                'file': (
+                    filename,
+                    image_data,
+                    mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+                )
             }
             data = {
                 'type': attachment_type,
@@ -307,7 +346,7 @@ class HomeboxClient:
             }
 
             response = requests.post(
-                f"{self.base_url}/api/v1/items/{item_id}/attachments",
+                f"{self.base_url}/api/v1/entities/{item_id}/attachments",
                 headers=upload_headers,
                 files=files,
                 data=data,
@@ -321,17 +360,19 @@ class HomeboxClient:
                 logger.info(f"✓ Uploaded attachment: {filename}")
                 return result
             elif response.status_code == 401:
-                # Token expired, try to re-login once
-                logger.warning("Token expired during upload, attempting to re-login...")
-                if self._login():
+                if self.api_key:
+                    logger.error("Homebox rejected the configured API key during upload")
+                else:
+                    logger.warning("Token expired during upload, attempting to re-login...")
+                if not self.api_key and self._login():
                     # Update auth header
                     upload_headers['Authorization'] = self.headers.get('Authorization')
                     # Retry the request
                     response = requests.post(
-                        f"{self.base_url}/api/v1/items/{item_id}/attachments",
+                        f"{self.base_url}/api/v1/entities/{item_id}/attachments",
                         headers=upload_headers,
-                        files={'file': (filename, image_data, 'image/jpeg')},
-                        data={'type': attachment_type, 'name': filename},
+                        files=files,
+                        data=data,
                         timeout=30
                     )
                     if response.status_code in [200, 201]:
@@ -371,7 +412,7 @@ class HomeboxClient:
             }
 
             response = requests.post(
-                f"{self.base_url}/api/v1/labels",
+                f"{self.base_url}/api/v1/tags",
                 headers=self.headers,
                 json=data,
                 timeout=10
@@ -454,48 +495,19 @@ class HomeboxClient:
                 return False
 
             # Get current label IDs
-            current_labels = item.get('labels', [])
-            current_label_ids = [label.get('id') for label in current_labels if label.get('id')]
+            current_tags = item.get('tags', [])
+            current_tag_ids = [tag.get('id') for tag in current_tags if tag.get('id')]
 
             # Add new label if not already present
-            if label_id in current_label_ids:
-                logger.debug(f"Label {label_id} already on item {item_id}")
+            if label_id in current_tag_ids:
+                logger.debug(f"Tag {label_id} already on entity {item_id}")
                 return True
 
-            current_label_ids.append(label_id)
-
-            # Update item with new labels
-            # IMPORTANT: Include ALL fields in PUT request to avoid resetting values
-            update_data = {
-                'name': item.get('name'),
-                'locationId': item.get('location', {}).get('id'),
-                'labelIds': current_label_ids,
-                'description': item.get('description', ''),
-                'quantity': item.get('quantity', 0),
-                'purchasePrice': item.get('purchasePrice', 0),
-                'purchaseFrom': item.get('purchaseFrom', ''),
-                'purchaseTime': item.get('purchaseTime', ''),
-                'manufacturer': item.get('manufacturer', ''),
-                'modelNumber': item.get('modelNumber', ''),
-                'serialNumber': item.get('serialNumber', ''),
-                'notes': item.get('notes', ''),
-                'warrantyDetails': item.get('warrantyDetails', ''),
-                'warrantyExpires': item.get('warrantyExpires', '')
-            }
-
-            response = requests.put(
-                f"{self.base_url}/api/v1/items/{item_id}",
-                headers=self.headers,
-                json=update_data,
-                timeout=30
-            )
-
-            if response.status_code == 200:
+            current_tag_ids.append(label_id)
+            if self._update_entity(item_id, {'tagIds': current_tag_ids}, current_entity=item):
                 logger.debug(f"✓ Added label {label_id} to item {item_id}")
                 return True
-            else:
-                logger.error(f"Failed to add label to item: {response.status_code}")
-                return False
+            return False
 
         except requests.exceptions.RequestException as e:
             logger.error(f"Error adding label to item: {e}")

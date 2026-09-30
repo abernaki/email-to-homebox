@@ -1,24 +1,23 @@
 # Email to Homebox - Automated Receipt Processor
 
-Automatically extract purchase data from email receipts using local AI (MLX on Apple Silicon) and add items to your Homebox inventory system.
+Extract purchase data from email receipts with Ollama and add items to Homebox. The checked-in extractor calls Ollama's HTTP API; `receipt_extractor_mlx.py` is a legacy filename, not an MLX implementation.
 
 ## Features
 
-- 🤖 **Local AI processing** using MLX-LM (Qwen2.5-7B-Instruct-4bit, optimized for Apple Silicon)
+- 🤖 **Ollama extraction** using the configured Ollama host and model
 - 📧 **Email integration** via IMAP - works with Gmail, Outlook, iCloud, Fastmail, and any IMAP provider
 - 🏠 **Homebox API integration** - automatically creates inventory items with purchase info
 - 📸 **OCR for physical receipts** - extract text from receipt photos using EasyOCR
   - Take a photo of a physical receipt with your phone
   - Email it to yourself as an attachment
   - System automatically extracts text using OCR
-  - GPU-accelerated on Apple Silicon
+  - Uses an available backend supported by EasyOCR
 - 🖼️ **Product image extraction** - finds and uploads product photos from emails
   - Extracts images from email attachments
   - Downloads linked images from HTML emails
   - DuckDuckGo search fallback when no email images
   - Smart filtering (size, URL patterns, dimensions)
-- 🔒 **Privacy-focused** - all AI processing happens locally on your Mac
-- ⚡️ **Fast** - leverages Apple's Metal GPU for quick inference (~2-3 sec per receipt)
+- 🔒 **Privacy-focused** - use a local Ollama server to keep receipt text on your network
 - 📊 **Smart validation** - cross-checks item prices vs receipt total, adjusts confidence
 - 🎯 **Confidence scoring** - only processes high-confidence extractions (≥0.7)
 - 🍎 **Consumable filtering** - automatically skip receipts for food/supplies, organize separately
@@ -35,9 +34,8 @@ From receipt emails, the system extracts:
 
 ## Requirements
 
-- macOS with Apple Silicon (M1/M2/M3/M4)
 - Python 3.10 or later
-- 8GB+ RAM recommended (model uses ~5GB)
+- An Ollama server with the configured model available
 - Email account with IMAP access (Gmail, Outlook, iCloud, Fastmail, etc.)
 - Homebox instance (tested with sysadminsmedia/homebox)
 
@@ -77,12 +75,15 @@ EMAIL_IMAP_PORT=993
 
 # Homebox settings
 HOMEBOX_URL=https://your-homebox-url/
-HOMEBOX_USERNAME=your-homebox-username
-HOMEBOX_PASSWORD=your-homebox-password
+HOMEBOX_API_KEY=your-dedicated-service-account-key
+# Legacy username/password login is used only when HOMEBOX_API_KEY is unset.
+# HOMEBOX_USERNAME=your-homebox-username
+# HOMEBOX_PASSWORD=your-homebox-password
 
-# MLX Model (default is good)
-AI_MODEL=mlx-community/Qwen2.5-7B-Instruct-4bit
-AI_MAX_TOKENS=4096
+# Ollama (defaults shown; set OLLAMA_HOST for your Ollama server)
+OLLAMA_HOST=http://localhost:11434
+AI_MODEL=qwen2.5:7b
+AI_MAX_TOKENS=2048
 ```
 
 **Email Setup:**
@@ -106,7 +107,52 @@ See [IMAP_PROVIDERS.md](IMAP_PROVIDERS.md) for detailed setup instructions for e
 2. Create subfolders: "Receipts/Receipts (in Homebox)", "Receipts/Receipts (process manually)", and "Receipts/Consumables"
 3. Move some receipt emails to the "Receipts" folder
 
-### 3. Test
+### 3. Safe synthetic test
+
+Run the isolated pipeline test first; it uses a synthetic receipt, a fake extractor, and a fake Homebox client. It makes no network calls:
+
+```bash
+python -m unittest tests.test_safe_pipeline tests.test_model_evaluation -v
+```
+
+To evaluate an installed Ollama model on the synthetic example, run the dry-run preview. It contacts only the explicitly supplied Ollama URL for model discovery and inference; it never reads IMAP credentials or calls Homebox:
+
+```bash
+python run_dry_run.py \
+  --input tests/fixtures/synthetic_receipt.json \
+  --ollama-url http://localhost:11434 \
+  --model qwen2.5:14b
+```
+
+Compare selected installed Ollama model tags serially against the same synthetic receipt, including field-level correctness and inference timings:
+
+```bash
+python run_model_evaluation.py \
+  --ollama-url http://localhost:11434 \
+  --models qwen2.5:14b qwen3:14b phi4:14b gemma4:12b
+
+# Explicit CPU-only requests; omit --num-gpu to use Ollama's normal placement.
+python run_model_evaluation.py \
+  --ollama-url http://localhost:11434 \
+  --num-gpu 0 \
+  --models qwen2.5:14b qwen3:14b
+```
+
+The evaluator uses no mailbox or Homebox, makes requests serially, and does not override Ollama's normal model keep-alive behavior. It does not run automatically. A default-placement request may use the host GPU, but does not guarantee that the shared Tesla P100 is selected. Ollama's current API/source supports `options.num_gpu: 0` for CPU-only execution; confirm the installed Ollama version supports it before running. Review the reported extraction correctness, `client_wall_seconds`, and Ollama load/prompt/generation metrics (server durations are nanoseconds; client wall time is seconds). See [TESTING.md](TESTING.md) for metric details and safety notes.
+
+The preview prints extracted receipt data and mapped Homebox payloads to stdout. The default location ID is a placeholder and is not checked against Homebox. Use only synthetic or sanitized input.
+
+### Deployment contract
+
+The Compose service explicitly runs the live daemon. Before starting it, configure `.env` with `EMAIL_ADDRESS`, `EMAIL_PASSWORD`, `HOMEBOX_URL`, `HOMEBOX_API_KEY`, and a container-reachable `OLLAMA_HOST`; `AI_MODEL` must name an already-installed Ollama model. Homebox API keys inherit the owning user's full access and have no per-key endpoint scope, so use a dedicated service account. Never mint keys from the app or place credentials in the image/source/plaintext manifests.
+
+The Dockerfile default command intentionally omits `--live`, so a standalone `docker run IMAGE` exits at the live opt-in guard without touching IMAP or Homebox. Compose opts in explicitly; after configuration review and approval, use `docker run --env-file .env IMAGE python src/app.py --live` for a standalone live daemon.
+
+For a future cluster deployment, inject `EMAIL_ADDRESS`, `EMAIL_PASSWORD`, and `HOMEBOX_API_KEY` from an ESO-managed Secret; keep `HOMEBOX_URL`, `OLLAMA_HOST`, `AI_MODEL`, and processing settings as non-secret configuration. Leave any scheduled one-shot job suspended until an image has been published, endpoint egress reviewed, and a human approves a test; its command is `python run_once.py --live`. `OLLAMA_HOST` must be routable and allowed from within the pod; `localhost` is not the host Ollama service. Container image publication, registry/fork setup, and infrastructure deployment are not performed by this repository task.
+
+### 4. Live integrations (not part of the safe test)
+
+The commands below access external services and may read or modify real mailbox/Homebox state. Do not use them for the synthetic first-stage evaluation.
 
 Test email fetching and extraction:
 
@@ -115,7 +161,7 @@ python test_email.py
 ```
 
 This will:
-- Download the AI model (~4-5GB, first run only, takes 5-10 min)
+- Connect to the configured Ollama server and request extraction from its configured model
 - Fetch a receipt from your "Receipts" folder
 - Extract and display the JSON data
 - Show confidence analysis
@@ -138,12 +184,12 @@ Test Homebox connection:
 python test_homebox.py
 ```
 
-### 4. Run
+### 5. Run
 
-Process all receipts in your "Receipts" folder:
+Process all receipts in your "Receipts" folder (live IMAP reads, mailbox moves, and Homebox writes):
 
 ```bash
-python run_once.py
+python run_once.py --live
 ```
 
 This will:
@@ -153,7 +199,7 @@ This will:
 - Add high-confidence items (≥0.7) to Homebox
 - Show summary of results
 
-### 5. Backfill Images (Optional)
+### 6. Backfill Images (Optional)
 
 Add images to existing items in Homebox:
 
@@ -199,7 +245,7 @@ email-to-homebox/
 ├── src/
 │   ├── app.py           # Main application logic
 │   ├── email_fetcher.py # Email IMAP handling + image extraction
-│   ├── receipt_extractor_mlx.py  # MLX AI extraction
+│   ├── receipt_extractor_mlx.py  # Ollama HTTP extraction (legacy filename)
 │   ├── homebox_client.py         # Homebox API client + attachment upload
 │   └── image_handler.py          # DuckDuckGo image search
 └── data/
@@ -245,12 +291,15 @@ homebox:
 
 ### AI Model (`.env`)
 
-Current default (recommended for 8GB+ RAM):
+Current checked-in implementation uses the Ollama API:
 
 ```bash
-AI_MODEL=mlx-community/Qwen2.5-7B-Instruct-4bit  # ~5GB
-AI_MAX_TOKENS=4096  # Needed for long product names
+OLLAMA_HOST=http://localhost:11434
+AI_MODEL=qwen2.5:7b
+AI_MAX_TOKENS=2048
 ```
+
+The project uses Ollama because that is the existing configured inference path. This is not a claim that MLX is unavailable on x86/Linux: current MLX documentation includes Linux CPU and CUDA backends. Compatibility and performance of MLX on a Tesla P100 have not been evaluated here.
 
 ### Processing Settings
 
@@ -287,7 +336,7 @@ LOG_LEVEL=INFO          # DEBUG, INFO, WARNING, ERROR
    - Parses HTML for `<img>` tags and downloads linked images
    - Filters by size (100x100 to 2000x2000), file size (>10KB), URL patterns
    - Matches images to extracted items
-3. **AI Extraction**: Sends receipt text to local MLX model (Qwen2.5-7B) for structured JSON extraction
+3. **AI Extraction**: Sends receipt text to the configured Ollama model for structured JSON extraction
 4. **Validation**:
    - AI provides initial confidence score (0.0-1.0)
    - System cross-checks item prices vs receipt total
@@ -310,10 +359,10 @@ LOG_LEVEL=INFO          # DEBUG, INFO, WARNING, ERROR
 
 ## Usage Modes
 
-### Current: One-Time Batch Processing (Recommended)
+### Current: One-Time Batch Processing (Live)
 
 ```bash
-python run_once.py
+python run_once.py --live
 ```
 
 Processes all emails in "Receipts" folder once and exits. Successfully processed receipts are moved to subfolder for organization.
@@ -339,12 +388,12 @@ The system will automatically:
 - Make sure all text is visible and not cut off
 - Higher resolution photos work better
 
-**Note:** OCR is GPU-accelerated on Apple Silicon, so it's fast! First run will download OCR models (~100MB).
+**Note:** EasyOCR may download its model weights on first use. The safe synthetic tests do not initialize OCR.
 
 ### Future: Daemon Mode
 
 ```bash
-python src/app.py
+python src/app.py --live
 ```
 
 Runs continuously, checking email every 5 minutes. Will auto-move emails to success/manual folders. (Currently implemented but not actively used)
@@ -382,17 +431,12 @@ Runs continuously, checking email every 5 minutes. Will auto-move emails to succ
 - Check debug logs: `python run_once.py` shows update requests
 - Price format: float, not string
 
-### Model Download
+### Ollama Connection
 
-**Problem:** MLX model won't download
-```bash
-# Manually download
-python -c "from mlx_lm import load; load('mlx-community/Qwen2.5-7B-Instruct-4bit')"
-```
-
-**Problem:** Out of memory
-- Need 8GB+ RAM for 7B model
-- Model uses ~5GB, system needs headroom
+**Problem:** Cannot reach Ollama or model is missing
+- Verify `OLLAMA_HOST` is reachable from the app/container
+- Verify the configured `AI_MODEL` tag exists on that Ollama server
+- For Docker, the compose file currently targets the host at `host.docker.internal:11434`
 
 ### OCR Issues
 
@@ -405,7 +449,7 @@ python -c "from mlx_lm import load; load('mlx-community/Qwen2.5-7B-Instruct-4bit
 **Problem:** EasyOCR initialization fails
 ```bash
 # Manually test EasyOCR
-python -c "import easyocr; reader = easyocr.Reader(['en'], gpu=True)"
+python -c "import easyocr; reader = easyocr.Reader(['en'], gpu=False)"
 ```
 
 **Problem:** OCR is slow
@@ -417,27 +461,29 @@ python -c "import easyocr; reader = easyocr.Reader(['en'], gpu=True)"
 
 ### Option 1: Manual Runs (Current)
 
-Run `python run_once.py` whenever you want to process new receipts. Simple and reliable.
+Run `python run_once.py --live` whenever you want to process new receipts. This reads/moves real mailbox messages and may write to Homebox.
 
 ### Option 2: Scheduled Runs (Cron)
 
 Add to crontab to run every hour:
 
 ```bash
-0 * * * * cd /path/to/email-to-homebox && /path/to/email-to-homebox/venv/bin/python run_once.py >> data/logs/cron.log 2>&1
+0 * * * * cd /path/to/email-to-homebox && /path/to/email-to-homebox/venv/bin/python run_once.py --live >> data/logs/cron.log 2>&1
 ```
 
 ### Option 3: Daemon Mode (Future)
 
-Use `src/app.py` for continuous monitoring. Not currently recommended until email moving is fully tested.
+Use `src/app.py --live` for continuous monitoring. Not currently recommended until email moving is fully tested.
 
 ## Important Notes
 
 ### Homebox API Quirks
 
 The Homebox API (sysadminsmedia/homebox) has a **two-step item creation** process:
-1. POST creates item with basic fields only (name, location, description, quantity)
-2. PUT updates item with extended fields (price, manufacturer, model, etc.)
+1. `POST /api/v1/entities` creates an item entity with basic fields (`name`, `parentId`, `description`, `quantity`, tags and supported identifiers).
+2. When purchase-specific fields are present, `PUT /api/v1/entities/{id}` updates the entity using the full entity response as a preservation baseline. Legacy `locationId` and `purchaseTime` input values are translated to `parentId` and `purchaseDate`.
+
+Homebox v0.26.2 removed `/api/v1/items` and `/api/v1/locations`; locations are entities queried with `isLocation=true`. Attachments use `/api/v1/entities/{id}/attachments`, and the former labels workflow now uses tags. See the [official entity-merge API migration guide](https://github.com/sysadminsmedia/homebox/blob/v0.26.2/docs/src/content/docs/en/advanced/entity-merge-upgrade.mdx).
 
 This is handled automatically by `homebox_client.py`.
 
@@ -446,6 +492,7 @@ This is handled automatically by `homebox_client.py`.
 Successfully processed receipts are automatically moved to organized subfolders:
 - **High confidence (≥0.7)**: Moved to `Receipts/Receipts (in Homebox)`
 - **Low confidence (<0.7)**: Moved to `Receipts/Receipts (process manually)`
+- **Partial Homebox write** (entity exists, purchase update failed): stopped and moved to `Receipts/Receipts (process manually)`; reconcile the returned entity ID before retrying
 - **Consumable items only**: Moved to `Receipts/Consumables` (not added to Homebox)
 - **Failed extraction**: Stays in original `Receipts` folder
 
@@ -469,7 +516,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for technical details, data flow, and imp
 ```bash
 python test_email.py      # Test email + extraction
 python test_homebox.py    # Test Homebox API
-python run_once.py        # Process receipts
+python run_once.py --live # Process receipts (live mailbox/Homebox access)
 ```
 
 ## Privacy & Security
@@ -496,7 +543,7 @@ python run_once.py        # Process receipts
   - Moves consumable receipts to separate folder for organization
 - 📸 **OCR for physical receipts** (2025-10-13)
   - Extract text from receipt photos using EasyOCR
-  - GPU-accelerated on Apple Silicon
+  - Uses an available backend supported by EasyOCR
   - Automatically processes physical receipt photos emailed to yourself
   - Smart detection: runs OCR when email body is minimal
 
@@ -518,7 +565,7 @@ MIT - Use however you want!
 ## Credits
 
 Built with:
-- [MLX-LM](https://github.com/ml-explore/mlx-lm) - Apple Silicon optimized LLM inference
+- [Ollama](https://ollama.com/) - local model serving used by the checked-in extractor
 - [Homebox](https://github.com/sysadminsmedia/homebox) - Home inventory management
 - [Qwen2.5-7B-Instruct](https://huggingface.co/Qwen/Qwen2.5-7B-Instruct) - Base model
 - [DDGS](https://github.com/deedy5/ddgs) - DuckDuckGo search (for image fallback)
